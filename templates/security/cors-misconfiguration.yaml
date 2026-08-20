@@ -1,0 +1,26 @@
+id: cors-misconfiguration
+name: CORS 跨域配置检测
+severity: medium
+author: gosleek
+description: |
+  检测 CORS 配置是否允许任意来源访问。
+  Access-Control-Allow-Origin: * 或回显请求源均存在风险。
+tags:
+  - security
+  - cors
+  - misconfiguration
+
+http:
+  - method: OPTIONS
+    path:
+      - "/"
+    headers:
+      Origin: https://evil.example.com
+    matchers:
+      - type: word
+        part: header
+        words:
+          - "Access-Control-Allow-Origin: *"
+      - type: dsl
+        dsl:
+          - "contains(header, 'Access-Control-Allow-Origin') && contains(header, 'evil.example.com')"

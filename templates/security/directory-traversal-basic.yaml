@@ -1,0 +1,25 @@
+id: directory-traversal-basic
+name: 基础目录穿越检测
+severity: high
+author: gosleek
+description: |
+  检测常见的目录穿越漏洞路径。
+  注意: 此模板仅做基础检测，实际利用需人工验证。
+tags:
+  - security
+  - traversal
+  - lfi
+
+http:
+  - method: GET
+    path:
+      - "/../../../etc/passwd"
+      - "/..%2f..%2f..%2fetc%2fpasswd"
+      - "/%2e%2e/%2e%2e/%2e%2e/etc/passwd"
+    matchers:
+      - type: regex
+        part: body
+        regex:
+          - "root:.*:0:0:"
+          - "bin:x:1:1:"
+        condition: or

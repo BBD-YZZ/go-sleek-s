@@ -1,0 +1,51 @@
+# Git repository exposure
+id: git-repo-exposure
+name: Git Repository Exposure
+description: |
+  Detects exposed .git directories which can lead to source code leakage.
+  Uses multiple requests to verify the repository is accessible.
+severity: high
+author: gosleek
+tags: [git, exposure, source-code]
+
+http:
+  # Step 1: Check .git/config
+  - raw: |+
+      GET /.git/config HTTP/1.1
+      Host: {{Hostname}}
+      User-Agent: Mozilla/5.0
+      Accept: */*
+      Connection: close
+
+    timeout: 10
+    redirects: false
+
+    matchers:
+      - type: word
+        part: body
+        words: ["[core]", "[remote", "repositoryformatversion"]
+        condition: or
+
+    extractors:
+      - name: git-url
+        type: regex
+        part: body
+        group: 1
+        regex: ["url = (.+)"]
+
+  # Step 2: Check .git/HEAD
+  - raw: |+
+      GET /.git/HEAD HTTP/1.1
+      Host: {{Hostname}}
+      User-Agent: Mozilla/5.0
+      Accept: */*
+      Connection: close
+
+    timeout: 10
+    redirects: false
+
+    matchers:
+      - type: word
+        part: body
+        words: ["ref:", "ref:"]
+        condition: or

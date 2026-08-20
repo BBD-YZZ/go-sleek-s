@@ -1,0 +1,36 @@
+# Binaries
+gosleek.exe
+gosleek-v*.exe
+gosleek
+
+# Build/cache / targets
+vendor/
+target/
+.cargo/
+go-build*/
+
+# Test artifacts / scan results
+results/
+results.sarif
+*.sarif
+
+# Logs
+logs/
+*.log
+
+# OOB credentials (contains real tokens — add your own in oob.example.yaml)
+configs/oob.yaml
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local plugin build dirs
+plugins/*/vendor/

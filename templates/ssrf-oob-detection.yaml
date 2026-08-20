@@ -1,0 +1,87 @@
+# Server-Side Request Forgery detection with OOB verification
+#
+# OOB 验证流程 (workflow 式):
+#   阶段1 - 触发: step-trigger 向 url 参数注入 {{oob}} 作为回连地址
+#   阶段2 - 验证: step-verify 调用 ceye API 检查 DNS/HTTP 回连记录
+#                 若响应 body 包含 oob_label → 漏洞成立
+#
+# 引擎会自动注入以下占位符 (仅当配置 ceye 后):
+#   {{oob}}         - 完整回连子域 (gs-xxxxxxxx.ceye.io)
+#   {{oob_label}}   - 唯一标签 (gs-xxxxxxxx) 用于 ceye API filter
+#   {{oob_token}}   - provider 凭据 (ceye token / dnslog PHPSESSID / callbackred key)
+#   {{oob_domain}}  - provider 域名
+
+id: ssrf-oob-detection
+name: SSRF Detection (OOB)
+description: |
+  通过注入 OOB 回连地址检测服务端请求伪造 (SSRF)。
+  向 url 参数注入 ceye.io 子域名，如果服务器发起了请求，
+  ceye.io 会收到 DNS/HTTP 回连记录，从而确认漏洞存在。
+severity: critical
+author: gosleek
+tags: [ssrf, oob, rce]
+
+# workflow 形式: 触发 + 验证两步走
+workflow:
+  # 阶段1: 触发 SSRF - 向常见 SSRF 参数注入回连地址
+  - name: trigger
+    http:
+      - raw: |+
+          GET /?url=http://{{oob}} HTTP/1.1
+          Host: {{Hostname}}
+          User-Agent: Mozilla/5.0
+          Accept: */*
+          Connection: close
+
+        timeout: 10
+        # 触发阶段只看服务器是否响应 (SSRF 无回显)
+        matchers-condition: or
+        matchers:
+          - type: status
+            status: [200, 302, 301, 403, 500, 502]
+
+  # 阶段2: 验证 DNS 回连 (拉全量 + 客户端小写比对)
+  - name: verify-dns
+    requires: [trigger]
+    delay: 5  # 等待5秒让DNS回连有时间发生
+    http:
+      - raw: |+
+          GET /v1/records?token={{oob_token}}&type=dns HTTP/1.1
+          Host: api.ceye.io
+          User-Agent: gosleek/1.0
+          Accept: */*
+          Connection: close
+
+        timeout: 30
+        matchers-condition: and
+        matchers:
+          - type: status
+            status: [200]
+          - type: json-word
+            json-path: data
+            json-field: name
+            words: ["{{oob_label}}"]
+            condition: or
+
+  # 阶段3: 验证 HTTP 回连 (拉全量 + 客户端小写比对)
+  - name: verify-http
+    requires: [verify-dns]
+    delay: 3  # 额外等待HTTP回连
+    http:
+      - raw: |+
+          GET /v1/records?token={{oob_token}}&type=http HTTP/1.1
+          Host: api.ceye.io
+          User-Agent: gosleek/1.0
+          Accept: */*
+          Connection: close
+
+        timeout: 30
+        matchers-condition: and
+        matchers:
+          - type: status
+            status: [200]
+          - type: json-word
+            json-path: data
+            json-field: name
+            words: ["{{oob_label}}"]
+            condition: or

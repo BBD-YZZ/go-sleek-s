@@ -1,0 +1,31 @@
+# gosleek OOB (Out-of-Band) 独立配置文件
+# 路径: configs/oob.yaml
+#
+# 加载顺序: configs/config.yaml 优先，若其中 ceye token/domain 为空，
+# 则自动回退读取本文件 (oob.yaml / configs/oob.yaml)。
+# 你可以直接在本文件中填入 ceye 凭据，无需修改 config.yaml。
+
+oob:
+  enabled: true          # 是否全局启用 OOB（也可通过 --oob 命令行参数启用）
+  provider: ceye          # 目前仅支持 "ceye"
+
+  ceye:
+    # === 必填：你的 ceye.io 凭据 ===
+    # API Token: 在 ceye.io 控制台获取
+    # 优先级: --ceye-key 命令行参数 > CEYE_TOKEN 环境变量 > 此配置文件
+    token: ""
+
+    # Domain: 你的 ceye.io 识别域名 (例如 abc123.ceye.io)
+    # 程序会生成 <随机标签>.<domain> 作为 OOB 回连地址
+    # 也可通过 CEYE_DOMAIN 环境变量设置
+    domain: ""
+
+    # === 可选：API 与轮询参数 ===
+    # ceye API 地址，一般不需要修改
+    api-url: "https://api.ceye.io/v1/records"
+
+    # 轮询间隔: 每隔多久查询一次 ceye API
+    poll-interval: "2s"
+
+    # 轮询超时: 最多等待多久
+    poll-timeout: "10s"

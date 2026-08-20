@@ -1,0 +1,22 @@
+id: ssl-tls-weak-cipher
+name: SSL/TLS 弱加密套件检测
+severity: low
+author: gosleek
+description: |
+  检测目标是否支持弱加密套件或旧版 TLS 协议。
+  此模板通过检查响应头中的 Server 信息间接推断 TLS 配置。
+tags:
+  - security
+  - ssl
+  - tls
+
+http:
+  - method: GET
+    path:
+      - "/"
+    matchers:
+      - type: regex
+        part: header
+        regex:
+          - 'Server:.*(?:nginx/[0-2]\.|Apache/[0-2]\.)'
+        condition: or

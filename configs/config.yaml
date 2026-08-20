@@ -1,0 +1,46 @@
+# gosleek 全局配置文件
+# 路径: configs/config.yaml
+
+# === HTTP 默认设置 ===
+user-agent: "Mozilla/5.0 (compatible; gosleek/1.0)"
+default-timeout: 10  # 秒
+max-redirects: 3
+
+# === 并发与限流 ===
+concurrency: 25       # 最大并行 worker 数（goroutine 数量恒定，不随模板增长）
+rate-limit: 150       # 每秒请求数（全局）
+
+# === 重试与退避 ===
+max-retries: 2
+retry-backoff: "2s"  # 基础退避，指数增长: 2s, 4s, 8s...
+
+# === 模板目录 ===
+template-dir: "templates"
+
+# === 输出与日志 ===
+log-file: "logs/gosleek.log"
+log-level: "info"  # debug, info, warn, error
+
+# === OOB 带外验证配置 ===
+# 优先级: 命令行参数 > 此配置文件 > oob.yaml
+oob:
+  enabled: true
+  provider: ceye          # ceye / dnslog / callbackred
+
+  ceye:
+    # 必填: 你的 ceye.io 凭据
+    # Token 优先级: --ceye-key 参数 > CEYE_TOKEN 环境变量 > 此配置 > oob.yaml
+    # Domain 优先级: --ceye-domain 参数 > CEYE_DOMAIN 环境变量 > 此配置 > oob.yaml
+    token: "e6c6e6995d01cd706b0522dea850a3c6"
+    domain: "lbwssd.ceye.io"            # 如 abc123.ceye.io
+
+    # 可选: API 与轮询参数
+    api-url: "https://api.ceye.io/v1/records"
+    poll-interval: "2s"   # 轮询间隔
+    poll-timeout: "10s"   # 最大等待时间
+
+  # dnslog.cn - 无需配置，自动获取子域名
+  dnslog: {}
+
+  # callback.red - 无需配置，自动获取 key
+  callbackred: {}

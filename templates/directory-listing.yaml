@@ -1,0 +1,33 @@
+# Directory listing detection
+id: directory-listing
+name: Directory Listing Enabled
+description: |
+  Detects when web server has directory listing enabled, potentially
+  exposing sensitive files and directories.
+severity: low
+author: gosleek
+tags: [directory, listing, exposure]
+
+http:
+  - raw: |+
+      GET / HTTP/1.1
+      Host: {{Hostname}}
+      User-Agent: Mozilla/5.0
+      Accept: */*
+      Connection: close
+
+    timeout: 10
+    redirects: false
+
+    matchers-condition: and
+    matchers:
+      - type: status
+        status: [200]
+      - type: word
+        part: body
+        words: ["Index of /", "Directory listing for", "<title>Index of"]
+        condition: or
+      - type: word
+        part: body
+        words: ["<html", "<!DOCTYPE"]
+        condition: or

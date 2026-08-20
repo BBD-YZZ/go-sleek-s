@@ -1,0 +1,20 @@
+id: x-powered-by-leak
+name: X-Powered-By 信息泄露
+severity: info
+author: gosleek
+description: |
+  检测服务器是否暴露 X-Powered-By 头，可能泄露后端技术栈信息。
+tags:
+  - security
+  - info-leak
+  - headers
+
+http:
+  - method: GET
+    path:
+      - "/"
+    matchers:
+      - type: regex
+        part: header
+        regex:
+          - 'X-Powered-By:\s*(?:Express|PHP/[0-9]|ASP\.NET|JSP)'

@@ -1,0 +1,23 @@
+id: csrf-token-missing
+name: CSRF Token 缺失检测
+severity: low
+author: gosleek
+description: |
+  检测表单页面是否包含 CSRF Token。
+  适用于常见框架的 CSRF 保护检测。
+tags:
+  - security
+  - csrf
+  - form
+
+http:
+  - method: GET
+    path:
+      - "/"
+      - "/login"
+      - "/register"
+    matchers:
+      - type: dsl
+        dsl:
+          - "!contains(body, 'csrf') && !contains(body, 'csrf_token') && !contains(body, '_token') && !contains(body, 'X-CSRF')"
+        condition: or

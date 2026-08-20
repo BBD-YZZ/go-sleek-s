@@ -1,0 +1,33 @@
+# WordPress Admin Panel Detection
+id: wordpress-admin-panel
+name: WordPress Admin Panel
+description: |
+  Detects WordPress admin login page which can be used for brute-force attacks.
+  Includes fingerprint pre-filter to only check WordPress sites.
+severity: info
+author: gosleek
+tags: [wordpress, cms, admin, exposure]
+
+fingerprints:
+  - title: "WordPress"
+  - header: [Server, "*"]
+
+http:
+  - raw: |+
+      GET /wp-admin/ HTTP/1.1
+      Host: {{Hostname}}
+      User-Agent: Mozilla/5.0
+      Accept: */*
+      Connection: close
+
+    timeout: 10
+    redirects: true
+
+    matchers-condition: and
+    matchers:
+      - type: status
+        status: [200]
+      - type: word
+        part: body
+        words: ["wp-login.php", "loginform", "WordPress"]
+        condition: or
