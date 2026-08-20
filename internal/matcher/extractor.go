@@ -3,6 +3,7 @@ package matcher
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/gosleek/gosleek/pkg/types"
@@ -35,6 +36,12 @@ func extractSingle(ext types.Extractor, ctx *MatchContext) (string, error) {
 		return extractKVal(ext, ctx)
 	case "json":
 		return extractJSON(ext, ctx)
+	case "xpath":
+		return extractXPath(ext, ctx)
+	case "css":
+		return extractCSS(ext, ctx)
+	case "html":
+		return extractHTML(ext, ctx)
 	default:
 		return extractRegex(ext, ctx)
 	}
@@ -199,6 +206,157 @@ func parseHeaderMap(raw string) map[string][]string {
 		key := strings.TrimSpace(line[:idx])
 		val := strings.TrimSpace(line[idx+1:])
 		result[key] = append(result[key], val)
+	}
+	return result
+}
+
+// extractXPath extracts data using XPath expressions from HTML body.
+func extractXPath(ext types.Extractor, ctx *MatchContext) (string, error) {
+	if len(ext.XPath) == 0 {
+		return "", fmt.Errorf("no xpath pattern")
+	}
+	data := extractPart(ext, ctx)
+	for _, expr := range ext.XPath {
+		result, err := applyXPath(data, expr)
+		if err == nil && result != "" {
+			return result, nil
+		}
+	}
+	return "", nil
+}
+
+// extractCSS extracts data using CSS selectors from HTML body.
+func extractCSS(ext types.Extractor, ctx *MatchContext) (string, error) {
+	if len(ext.CSS) == 0 {
+		return "", fmt.Errorf("no css selector")
+	}
+	data := extractPart(ext, ctx)
+	for _, selector := range ext.CSS {
+		result := applyCSSSelector(data, selector)
+		if result != "" {
+			return result, nil
+		}
+	}
+	return "", nil
+}
+
+// extractHTML extracts text content from HTML tags using CSS-like selectors.
+func extractHTML(ext types.Extractor, ctx *MatchContext) (string, error) {
+	data := extractPart(ext, ctx)
+	for _, tag := range ext.CSS {
+		re, err := cachedCompile(fmt.Sprintf(`<%s[^>]*>([^<]*)</%s>`, tag, tag))
+		if err != nil {
+			continue
+		}
+		matches := re.FindStringSubmatch(data)
+		if len(matches) > 1 {
+			return matches[1], nil
+		}
+	}
+	return "", nil
+}
+
+// applyXPath applies a simple XPath expression to HTML content.
+// Supports basic expressions like //tag, //tag[@attr='value'], //tag/text()
+func applyXPath(html, expr string) (string, error) {
+	// Handle //tag[@attr='value']/text() patterns
+	if strings.HasSuffix(expr, "/text()") {
+		expr = expr[:len(expr)-7]
+	}
+	// Extract tag and attribute conditions
+	tag := expr
+	attrExpr := ""
+	if idx := strings.Index(expr, "["); idx >= 0 {
+		tag = expr[:idx]
+		attrExpr = expr[idx:]
+	}
+	// Remove leading //
+	tag = strings.TrimPrefix(tag, "//")
+	tag = strings.TrimPrefix(tag, "/")
+
+	// Find matching tag content
+	var reStr string
+	if attrExpr != "" {
+		// Parse attribute condition like [@id='token']
+		attrName := strings.TrimPrefix(attrExpr, "[@")
+		parts := strings.SplitN(attrName, "=", 2)
+		if len(parts) < 2 {
+			return "", fmt.Errorf("invalid xpath attr: %s", attrExpr)
+		}
+		attrName = parts[0]
+		attrValue := strings.TrimSuffix(parts[1], "]")
+		attrValue = strings.Trim(attrValue, "'\"")
+		reStr = fmt.Sprintf(`<%s[^>]*\b%s="%s"[^>]*>([^<]*)</%s>`, tag, attrName, attrValue, tag)
+	} else {
+		reStr = fmt.Sprintf(`<%s[^>]*>([^<]*)</%s>`, tag, tag)
+	}
+
+	re, err := cachedCompile(reStr)
+	if err != nil {
+		return "", err
+	}
+	matches := re.FindStringSubmatch(html)
+	if len(matches) > 1 {
+		return matches[1], nil
+	}
+	return "", nil
+}
+
+// cssToXPath converts a CSS selector to a simple XPath expression.
+func cssToXPath(selector string) string {
+	// Basic CSS to XPath conversion
+	selector = strings.TrimSpace(selector)
+	if strings.HasPrefix(selector, "#") {
+		id := strings.TrimPrefix(selector, "#")
+		return fmt.Sprintf("//*[contains(@id, '%s')]", id)
+	}
+	if strings.HasPrefix(selector, ".") {
+		class := strings.TrimPrefix(selector, ".")
+		return fmt.Sprintf("//*[contains(@class, '%s')]", class)
+	}
+	// Compound selectors like "div#error"
+	if idx := strings.Index(selector, "#"); idx > 0 {
+		tag := selector[:idx]
+		id := selector[idx+1:]
+		return fmt.Sprintf("//%s[@id='%s']", tag, id)
+	}
+	if idx := strings.Index(selector, "."); idx > 0 {
+		tag := selector[:idx]
+		class := selector[idx+1:]
+		return fmt.Sprintf("//%s[contains(@class, '%s')]", tag, class)
+	}
+	// Tag selector
+	return fmt.Sprintf("//%s", selector)
+}
+
+// applyCSSSelector applies a CSS selector to HTML content.
+func applyCSSSelector(html, selector string) string {
+	// Handle simple class selectors like .error
+	if strings.HasPrefix(selector, ".") {
+		class := selector[1:]
+		// Match any tag with class="... error ..." containing the text
+		re, err := cachedCompile(fmt.Sprintf(`class="[^"]*%s[^"]*"[^>]*>([^<]*)</[^>]+>`, regexp.QuoteMeta(class)))
+		if err == nil {
+			matches := re.FindStringSubmatch(html)
+			if len(matches) > 1 {
+				return matches[1]
+			}
+		}
+		// Try alternate format
+		re, err = cachedCompile(fmt.Sprintf(`class="%s"[^>]*>([^<]*)</[^>]+>`, regexp.QuoteMeta(class)))
+		if err == nil {
+			matches := re.FindStringSubmatch(html)
+			if len(matches) > 1 {
+				return matches[1]
+			}
+		}
+		return ""
+	}
+	// Handle compound selectors
+	xpath := cssToXPath(selector)
+	result, err := applyXPath(html, xpath)
+	if err != nil || result == "" {
+		return ""
 	}
 	return result
 }

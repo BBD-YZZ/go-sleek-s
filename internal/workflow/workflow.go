@@ -19,6 +19,21 @@ type LoggerIface interface {
 	WarnKV(msg string, args ...interface{})
 }
 
+// isOOBRequest detects whether a parsed HTTP request is directed to an OOB provider.
+// Returns (isOOB bool, provider string, oobInfo string).
+func isOOBRequest(rawReq *httpclient.RawRequest) (bool, string, string) {
+	host := strings.ToLower(rawReq.Headers["Host"])
+	switch {
+	case strings.Contains(host, "api.ceye.io"):
+		return true, "ceye", "ceye query (api.ceye.io)"
+	case strings.Contains(host, "47.244.138.18") || strings.Contains(host, "dnslog"):
+		return true, "dnslog", "dnslog query (47.244.138.18)"
+	case strings.Contains(host, "callback.red"):
+		return true, "callbackred", "callback.red query"
+	}
+	return false, "", ""
+}
+
 // Executor handles multi-step workflow execution.
 type Executor struct {
 	client    *httpclient.Client
@@ -657,7 +672,8 @@ func buildMultipartBody(body, boundary string) string {
 }
 
 // injectGlobalHeaders inserts global CLI headers into a raw HTTP request string.
-// It appends missing headers after the header block (after the blank line separating headers from body).
+// It inserts missing headers BEFORE the blank line that separates headers from body,
+// so that ParseRaw correctly parses them as HTTP headers rather than body content.
 func injectGlobalHeaders(raw string, headers map[string]string) string {
 	if len(headers) == 0 {
 		return raw
@@ -666,18 +682,28 @@ func injectGlobalHeaders(raw string, headers map[string]string) string {
 	idx := strings.Index(raw, sep)
 	if idx < 0 {
 		idx = strings.Index(raw, "\n\n")
-		if idx < 0 {
-			return raw
-		}
-		idx += 2
-	} else {
-		idx += len(sep)
 	}
+	if idx >= 0 {
+		// Insert BEFORE the blank line so new headers appear in the header block.
+		var sb strings.Builder
+		sb.WriteString(raw[:idx])
+		sb.WriteString("\r\n")
+		for k, v := range headers {
+			sb.WriteString(fmt.Sprintf("%s: %s\r\n", k, v))
+		}
+		sb.WriteString(raw[idx:])
+		return sb.String()
+	}
+	// No separator found — append headers at the end.
+	raw = strings.TrimRight(raw, "\r\n")
+	return raw + "\r\n" + injectHeadersMap(headers)
+}
+
+// injectHeadersMap formats a headers map into HTTP header lines.
+func injectHeadersMap(headers map[string]string) string {
 	var sb strings.Builder
-	sb.WriteString(raw[:idx])
 	for k, v := range headers {
 		sb.WriteString(fmt.Sprintf("%s: %s\r\n", k, v))
 	}
-	sb.WriteString(raw[idx:])
 	return sb.String()
 }

@@ -103,6 +103,7 @@ func NewScanner(cfg *config.GlobalConfig, verbose int, oob OOBConfig, proxy stri
 		RateLimit:      cfg.RateLimit,
 		UserAgent:      cfg.UserAgent,
 		MaxRedirects:   cfg.MaxRedirects,
+		MaxBodySize:    cfg.MaxBodySize,
 		Proxy:          proxy,
 		Insecure:       insecure,
 		FollowRedirect: true, // default: follow redirects up to MaxRedirects
@@ -125,10 +126,10 @@ func NewScanner(cfg *config.GlobalConfig, verbose int, oob OOBConfig, proxy stri
 }
 
 // SetGlobalHeaders injects headers into every request for the duration of a scan.
+// Headers are also propagated to the HTTP client so plugins get them via SendRaw.
 func (s *Scanner) SetGlobalHeaders(h map[string]string) {
-	for k, v := range h {
-		s.globalHeaders[k] = v
-	}
+	s.globalHeaders = h
+	s.client.SetGlobalHeaders(h)
 }
 
 // SetFollowRedirects controls whether redirects are followed globally.
@@ -233,12 +234,18 @@ func (s *Scanner) SetCallbacks(
 func (s *Scanner) Run(ctx context.Context, templates []*types.Template, plugins []plugin.Plugin, targets []string) []*types.Result {
 	// Initialize OOB provider (Probe for dnslog/callbackred, Setup for ceye)
 	if s.oobProvider != nil {
+		// Wire shared client and callbacks for request/response logging
+		s.oobProvider.SetClient(s.client)
+		s.oobProvider.SetVerbose(s.verbose, s.onPacket, s.onRaw)
+		s.oobProvider.SetAPIConfig(s.cfg.OOB.Ceye.APIURL, s.cfg.OOB.Ceye.PollInterval, s.cfg.OOB.Ceye.PollTimeout)
 		// Call Setup with the configured label/domain (no-op for auto-probe providers)
 		s.oobProvider.Setup(s.oobLabel, s.oobDomain)
 		if err := s.oobProvider.Probe(ctx); err != nil {
-			s.debug("OOB provider probe failed: %v", err)
+			s.verbosef("OOB provider (%s) probe failed: %v", s.oobProvider.Name(), err)
 			s.oobProvider = nil
 			s.oobAvailable = false
+		} else {
+			s.verbosef("OOB provider initialized: %s (label=%s, url=%s)", s.oobProvider.Name(), s.oobProvider.Label(), s.oobProvider.CallbackURL())
 		}
 	}
 
@@ -247,6 +254,9 @@ func (s *Scanner) Run(ctx context.Context, templates []*types.Template, plugins 
 		if t.OOBProvider != "" && t.OOBProvider != s.oobProvider.Name() {
 			p := s.getOOBProvider(t)
 			if p != nil {
+				p.SetClient(s.client)
+				p.SetVerbose(s.verbose, s.onPacket, s.onRaw)
+				p.SetAPIConfig(s.cfg.OOB.Ceye.APIURL, s.cfg.OOB.Ceye.PollInterval, s.cfg.OOB.Ceye.PollTimeout)
 				p.Setup(s.oobLabel, s.oobDomain)
 				if err := p.Probe(ctx); err != nil {
 					s.debug("OOB provider %s probe failed for template %s: %v", p.Name(), t.ID, err)
@@ -421,7 +431,7 @@ func (s *Scanner) runJob(ctx context.Context, job Job, results chan<- *types.Res
 		// 检查模板所需的 provider 是否已初始化
 		if tmplProvider == nil || !s.isOOBProviderAvailable(tmplProvider) {
 			providerName := tmplProvider.Name()
-			s.debug("跳过OOB模板(%s未配置): %s", providerName, id)
+			s.debug("跳过OOB%s(%s未配置): %s", oobKindName(job), providerName, id)
 			if s.logger != nil {
 				s.logger.InfoKV("skip OOB template", "provider", providerName, "template", id)
 			}
@@ -507,7 +517,8 @@ func (s *Scanner) executePlugin(ctx context.Context, p plugin.Plugin, target str
 	}
 
 	if s.oobAvailable && s.oobProvider != nil {
-		pctx.Ceye = plugin.NewCeyeHandle(s.oobProvider.Label(), s.oobProvider.CallbackURL(), s.oobProvider.Token(), s.client)
+		// 直接传递已配置的 oobProvider，确保 OOB API 请求有日志输出
+		pctx.Ceye = plugin.NewOOBHandle(s.oobProvider, s.client)
 	}
 	if s.logger != nil {
 		pctx.Log = plugin.NewPluginLogger(p.Meta().ID, s.logger)
@@ -616,8 +627,8 @@ func (s *Scanner) executeHTTP(ctx context.Context, tmpl *types.Template, target 
 					continue
 				}
 			} else {
-				// For raw requests, inject global headers
-				rawReq = injectGlobalHeaders(rawReq, s.globalHeaders)
+				// For raw requests, placeholder substitution only
+				// (global headers already injected in executeHTTP or via client)
 				rawReq = eng.ReplaceWithEscape(rawReq)
 			}
 
@@ -643,6 +654,25 @@ func (s *Scanner) executeHTTP(ctx context.Context, tmpl *types.Template, target 
 					}
 					// Probe requests with wordlists: extractors still run, but matcher results are ignored
 					s.sendRequest(ctx, tmpl, i, lineReq, reqTimeout, req.Redirects, allExtracted, eng, &reqResults, &reqEvidence, target, req.Extractors, req.Matchers, !req.Probe, &lastRawReq, &lastRawResp)
+				}
+				continue
+			}
+
+			// Range injection: iterate over values and replace placeholder
+			if req.Range != nil && len(req.Range.Values) > 0 {
+				for _, val := range req.Range.Values {
+					select {
+					case <-ctx.Done():
+						return nil
+					default:
+					}
+					rangeReq := strings.ReplaceAll(rawReq, "{{"+req.Range.Key+"}}", val)
+					if rangeReq == rawReq {
+						// Placeholder not found, send original
+						s.sendRequest(ctx, tmpl, i, rawReq, reqTimeout, req.Redirects, allExtracted, eng, &reqResults, &reqEvidence, target, req.Extractors, req.Matchers, !req.Probe, &lastRawReq, &lastRawResp)
+						break
+					}
+					s.sendRequest(ctx, tmpl, i, rangeReq, reqTimeout, req.Redirects, allExtracted, eng, &reqResults, &reqEvidence, target, req.Extractors, req.Matchers, !req.Probe, &lastRawReq, &lastRawResp)
 				}
 				continue
 			}
@@ -686,6 +716,10 @@ func (s *Scanner) executeHTTP(ctx context.Context, tmpl *types.Template, target 
 // rawReqPtr/rawRespPtr: optional pointers to capture the last raw request/response for the matched request.
 func (s *Scanner) sendRequest(ctx context.Context, tmpl *types.Template, reqIdx int, rawReq string, reqTimeout int, redirects *bool, allExtracted map[string]string, eng *placeholder.Engine, reqResults *[]bool, evidence *[]string, target string, extractors []types.Extractor, matchers []types.Matcher, countResult bool, rawReqPtr, rawRespPtr *string) {
 	s.logRequest(tmpl.ID, reqIdx, rawReq)
+
+	// Inject global headers into raw request text so they appear in -vv output
+	// and are sent even when sendRequest calls SendParsed directly.
+	rawReq = s.client.InjectGlobalHeaders(rawReq)
 
 	parsed, err := httpclient.ParseRaw(rawReq)
 	if err != nil {
@@ -859,29 +893,43 @@ func encodeLine(line, encoding string) string {
 }
 
 // injectGlobalHeaders inserts global CLI headers into a raw HTTP request string.
-// It appends missing headers after the Host header block.
+// It inserts missing headers BEFORE the blank line that separates headers from body,
+// so that ParseRaw correctly parses them as HTTP headers rather than body content.
+// If no \r\n\r\n separator exists, headers are appended at the end of the string.
 func injectGlobalHeaders(raw string, headers map[string]string) string {
 	if len(headers) == 0 {
 		return raw
 	}
-	// Insert after the header block (after the blank line that separates headers from body)
+	// Find the header/body separator: \r\n\r\n (or \n\n as fallback).
 	sep := "\r\n\r\n"
 	idx := strings.Index(raw, sep)
 	if idx < 0 {
 		idx = strings.Index(raw, "\n\n")
-		if idx < 0 {
-			return raw
-		}
-		idx += 2
-	} else {
-		idx += len(sep)
 	}
+	if idx >= 0 {
+		// Insert BEFORE the blank line so new headers appear in the header block.
+		// raw[:idx] ends just before \r\n\r\n, so we add \r\n to close the last header.
+		var sb strings.Builder
+		sb.WriteString(raw[:idx])
+		sb.WriteString("\r\n")
+		for k, v := range headers {
+			sb.WriteString(fmt.Sprintf("%s: %s\r\n", k, v))
+		}
+		sb.WriteString(raw[idx:])
+		return sb.String()
+	}
+	// No separator found — append headers at the end.
+	// Remove trailing \r\n to avoid creating a false blank line.
+	raw = strings.TrimRight(raw, "\r\n")
+	return raw + "\r\n" + injectHeadersMap(headers)
+}
+
+// injectHeadersMap formats a headers map into HTTP header lines.
+func injectHeadersMap(headers map[string]string) string {
 	var sb strings.Builder
-	sb.WriteString(raw[:idx])
 	for k, v := range headers {
 		sb.WriteString(fmt.Sprintf("%s: %s\r\n", k, v))
 	}
-	sb.WriteString(raw[idx:])
 	return sb.String()
 }
 
@@ -1143,6 +1191,24 @@ func evalRunIf(expr string, extracted map[string]string, eng *placeholder.Engine
 	lower := strings.ToLower(strings.TrimSpace(val))
 	if lower == "false" || lower == "0" {
 		return false
+	}
+	// If the expression looks like a DSL expression (contains ==, !=, etc.),
+	// evaluate it using the DSL engine
+	if strings.Contains(val, "==") || strings.Contains(val, "!=") ||
+		strings.Contains(val, ">") || strings.Contains(val, "<") ||
+		strings.Contains(val, "contains") || strings.Contains(val, "regex") ||
+		strings.Contains(val, "!") {
+		// Build a match context with extracted variables
+		ctx := &matcher.MatchContext{
+			StatusCode:    200,
+			Body:          "",
+			Header:        "",
+			ExtractedVars: extracted,
+		}
+		if result, err := matcher.EvalDSL(val, ctx); err == nil {
+			return result
+		}
+		// If DSL evaluation fails, fall through to default behavior
 	}
 	return true
 }

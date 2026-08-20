@@ -1,6 +1,10 @@
 package oob
 
-import "context"
+import (
+	"context"
+
+	"github.com/gosleek/gosleek/internal/httpclient"
+)
 
 // Provider is the interface for OOB (Out-of-Band) verification backends.
 // Each provider implements DNS/HTTP callback recording and polling.
@@ -23,6 +27,13 @@ type Provider interface {
 	// Setup configures the provider with external credentials (e.g. ceye label/domain).
 	// Not all providers need this (dnslog/callbackred auto-probe).
 	Setup(label, domain string)
+	// SetClient sets the shared HTTP client so providers can use it for API calls.
+	SetClient(client *httpclient.Client)
+	// SetVerbose enables request/response logging when verbose >= 2.
+	SetVerbose(verbose int, onPacket func(tag string, summary string, raw string), onRaw func(tag, format string, args ...interface{}))
+	// SetAPIConfig sets ceye-specific API configuration (API URL, poll timeout).
+	// No-op for non-ceye providers.
+	SetAPIConfig(apiURL, pollInterval, pollTimeout string)
 }
 
 // NewOobProvider creates an OOB provider based on the given configuration.

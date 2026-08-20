@@ -305,14 +305,14 @@ func (c *Console) PrintScanConfig(info ScanConfigInfo) {
 	c.printCard(pterm.LightCyan("▸")+"  扫描配置", pterm.LightCyan, lines, 72)
 }
 
-// PrintOOBWarning warns when templates need OOB but the provider is not configured.
-func (c *Console) PrintOOBWarning(oobTemplateCount int, provider string) {
+// PrintOOBWarning warns when templates or plugins need OOB but the provider is not configured.
+func (c *Console) PrintOOBWarning(oobCount int, provider string) {
 	if !c.visible(0) {
 		return
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	msg := fmt.Sprintf("检测到 %d 个模板需要 OOB 验证，但 %s 未配置", oobTemplateCount, provider)
+	msg := fmt.Sprintf("检测到 %d 个模板/插件需要 OOB 验证，但 %s 未配置", oobCount, provider)
 	lines := []string{
 		"",
 		"    " + pterm.Yellow(msg),

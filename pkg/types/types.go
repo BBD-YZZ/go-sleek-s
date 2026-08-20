@@ -102,6 +102,7 @@ type HTTPRequest struct {
 	Redirects  *bool       `yaml:"redirects,omitempty"`
 	Threads    int         `yaml:"threads,omitempty"`
 	RateLimit  int         `yaml:"rate-limit,omitempty"`
+	Range      *RangeConfig `yaml:"range,omitempty"` // dynamic value iteration
 
 	MatchersCondition string         `yaml:"matchers-condition,omitempty"`
 	Matchers          []Matcher      `yaml:"matchers,omitempty"`
@@ -115,6 +116,12 @@ type HTTPRequest struct {
 
 	// Name for workflow reference
 	Name string `yaml:"name,omitempty"`
+}
+
+// RangeConfig iterates over values and replaces placeholder in raw request.
+type RangeConfig struct {
+	Key    string   `yaml:"key"`      // placeholder key like "param" → replaces {{param}}
+	Values []string `yaml:"values"`   // values to iterate
 }
 
 // WordlistConfig configures dictionary injection for a request block.
@@ -156,13 +163,15 @@ type Matcher struct {
 // Extractor pulls data from responses for reuse.
 type Extractor struct {
 	Name   string   `yaml:"name"`
-	Type   string   `yaml:"type"` // regex/word/kval/json/cookie
+	Type   string   `yaml:"type"` // regex/word/kval/json/cookie/xpath/css
 	Part   string   `yaml:"part,omitempty"`
 	Regex  []string `yaml:"regex,omitempty"`
 	Group  int      `yaml:"group,omitempty"`
 	Words  []string `yaml:"words,omitempty"`
 	KVal   []string `yaml:"kval,omitempty"`
 	JSON   []string `yaml:"json,omitempty"`
+	XPath  []string `yaml:"xpath,omitempty"` // XPath expressions for HTML extraction
+	CSS    []string `yaml:"css,omitempty"`   // CSS selectors for HTML extraction
 	Internal bool   `yaml:"internal,omitempty"`
 }
 

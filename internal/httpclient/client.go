@@ -43,6 +43,7 @@ type Client struct {
 	followRedirect bool // default: follow up to MaxRedirects; false = never follow
 	maxBodySize    int64 // 0 = unlimited
 	allowExternal  bool // allow Host header to redirect to different hosts
+	globalHeaders  map[string]string // global CLI headers injected into raw request text
 }
 
 // ClientConfig configures the HTTP client.
@@ -166,6 +167,18 @@ func setupProxy(transport *http.Transport, proxyStr string, timeout time.Duratio
 	}
 }
 
+// SetGlobalHeaders injects global CLI headers into the raw request text
+// before sending. This ensures headers appear in -vv output and are sent
+// for both plugin (SendRaw) and workflow (SendParsed) paths.
+func (c *Client) SetGlobalHeaders(headers map[string]string) {
+	if c.globalHeaders == nil {
+		c.globalHeaders = make(map[string]string)
+	}
+	for k, v := range headers {
+		c.globalHeaders[k] = v
+	}
+}
+
 // HTTPClient returns the underlying *http.Client for direct use.
 func (c *Client) HTTPClient() *http.Client {
 	return c.httpClient
@@ -220,7 +233,10 @@ func ParseRaw(raw string) (*RawRequest, error) {
 }
 
 // SendRaw sends a raw HTTP request to the given base URL.
+// Global headers (from -H/--header) are injected into the raw request text
+// before parsing, so they appear in -vv output and are actually sent.
 func (c *Client) SendRaw(ctx context.Context, baseURL string, raw string) (*Response, error) {
+	raw = c.InjectGlobalHeaders(raw)
 	parsed, err := ParseRaw(raw)
 	if err != nil {
 		return nil, err
@@ -230,6 +246,8 @@ func (c *Client) SendRaw(ctx context.Context, baseURL string, raw string) (*Resp
 
 // SendParsed sends a parsed raw request to the given base URL.
 func (c *Client) SendParsed(ctx context.Context, baseURL string, req *RawRequest) (*Response, error) {
+	// Inject config user-agent into raw request text so it appears in -vv output.
+	c.injectConfigUserAgent(req)
 	// Determine host for rate limiting
 	host := baseURL
 	if u, err := url.Parse(baseURL); err == nil {
@@ -585,6 +603,53 @@ func (r *RawRequest) String() string {
 // ParseRawBytes parses raw HTTP request from bytes.
 func ParseRawBytes(raw []byte) (*RawRequest, error) {
 	return ParseRaw(string(raw))
+}
+
+// InjectGlobalHeaders injects global CLI headers into the raw request text.
+// Called in SendRaw and also exported so engine.go can call it.
+func (c *Client) InjectGlobalHeaders(raw string) string {
+	if len(c.globalHeaders) == 0 {
+		return raw
+	}
+	sep := "\r\n\r\n"
+	idx := strings.Index(raw, sep)
+	if idx < 0 {
+		idx = strings.Index(raw, "\n\n")
+	}
+	if idx >= 0 {
+		var sb strings.Builder
+		sb.WriteString(raw[:idx])
+		sb.WriteString("\r\n")
+		for k, v := range c.globalHeaders {
+			sb.WriteString(fmt.Sprintf("%s: %s\r\n", k, v))
+		}
+		sb.WriteString(raw[idx:])
+		return sb.String()
+	}
+	// No separator — trim trailing \r\n then append
+	raw = strings.TrimRight(raw, "\r\n")
+	var sb strings.Builder
+	sb.WriteString(raw)
+	sb.WriteString("\r\n")
+	for k, v := range c.globalHeaders {
+		sb.WriteString(fmt.Sprintf("%s: %s\r\n", k, v))
+	}
+	return sb.String()
+}
+
+// injectConfigUserAgent injects the config user-agent into the raw request text
+// so it appears in -vv output. Only injects if no User-Agent header is present.
+func (c *Client) injectConfigUserAgent(req *RawRequest) {
+	if req == nil || c.userAgent == "" {
+		return
+	}
+	// Check if any User-Agent header already exists (case-insensitive)
+	for k := range req.Headers {
+		if strings.EqualFold(k, "User-Agent") {
+			return
+		}
+	}
+	req.Headers["User-Agent"] = c.userAgent
 }
 
 // ReadAllRaw is a helper to read raw request from a bytes.Reader.

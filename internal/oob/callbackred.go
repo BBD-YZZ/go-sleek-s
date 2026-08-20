@@ -31,6 +31,7 @@ type callbackRedRecord struct {
 }
 
 // callbackRedProvider implements Provider for callback.red.
+//
 // Two-step flow:
 //   1. GET /get → returns {"key":"uuid","subdomain":"xxx.callback.red",...}
 //   2. POST / with "key=uuid" → returns {"code":200,"data":[{"subdomain":"xxx.callback.red","type":"dns",...}]}
@@ -41,14 +42,32 @@ type callbackRedRecord struct {
 //   - verify response: data[0].subdomain = "tsgm.callback.red" (with optional trailing dot)
 //   - match: json-word json-path=data json-field=subdomain words=["{{oob_label}}"] condition=or
 type callbackRedProvider struct {
-	key       string // API key (UUID) from GET /get
-	subdomain string // e.g. "tsgm.callback.red"
-	label     string // bare identifier, e.g. "tsgm"
+	key       string
+	subdomain string
+	label     string
 	client    *httpclient.Client
+	verbose   int
+	onPacket  func(tag string, summary string, raw string)
+	onRaw     func(tag, format string, args ...interface{})
 }
 
 // Setup is a no-op for callback.red — it auto-probes.
 func (c *callbackRedProvider) Setup(label, domain string) {}
+
+// SetClient sets the shared HTTP client.
+func (c *callbackRedProvider) SetClient(client *httpclient.Client) {
+	c.client = client
+}
+
+// SetVerbose enables request/response logging.
+func (c *callbackRedProvider) SetVerbose(verbose int, onPacket func(string, string, string), onRaw func(string, string, ...interface{})) {
+	c.verbose = verbose
+	c.onPacket = onPacket
+	c.onRaw = onRaw
+}
+
+// SetAPIConfig is a no-op for callbackred.
+func (c *callbackRedProvider) SetAPIConfig(apiURL, pollInterval, pollTimeout string) {}
 
 func newCallbackRedProvider() *callbackRedProvider {
 	return &callbackRedProvider{
@@ -63,16 +82,32 @@ func (c *callbackRedProvider) Token() string       { return c.key }
 
 // Probe fetches a fresh subdomain and key from callback.red.
 func (c *callbackRedProvider) Probe(ctx context.Context) error {
-	req, err := http.NewRequestWithContext(ctx, "GET", "http://callback.red/get", nil)
+	url := "http://callback.red/get"
+
+	rawReq := fmt.Sprintf("GET %s HTTP/1.1\r\nHost: callback.red\r\nAccept-Encoding: gzip, deflate, br\r\nAccept-Language: zh-CN,zh;q=0.9\r\nConnection: close\r\n\r\n", url)
+	if c.verbose >= 2 && c.onPacket != nil {
+		c.onPacket("外带", "callback.red probe (获取 key)", rawReq)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Accept-Encoding", "gzip, deflate, br")
 	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9")
 
-	resp, err := c.client.HTTPClient().Do(req)
-	if err != nil {
-		return err
+	var resp *http.Response
+	var httpErr error
+	if c.client != nil {
+		resp, httpErr = c.client.HTTPClient().Do(req)
+	} else {
+		resp, httpErr = http.DefaultClient.Do(req)
+	}
+	if httpErr != nil {
+		if c.verbose >= 2 && c.onRaw != nil {
+			c.onRaw("外带", "callback.red probe failed: %v", httpErr)
+		}
+		return httpErr
 	}
 	defer resp.Body.Close()
 
@@ -97,7 +132,6 @@ func (c *callbackRedProvider) Probe(ctx context.Context) error {
 }
 
 // VerifyDNS checks callback.red for DNS records.
-// Parses JSON: {"code":200,"data":[{"subdomain":"xxx.callback.red","type":"dns",...}]}
 func (c *callbackRedProvider) VerifyDNS(ctx context.Context) (bool, error) {
 	return c.verifyRecords(ctx)
 }
@@ -111,17 +145,37 @@ func (c *callbackRedProvider) verifyRecords(ctx context.Context) (bool, error) {
 	if c.key == "" {
 		return false, fmt.Errorf("callback.red: no key, call Probe() first")
 	}
-	resp, err := httpclient.New(httpclient.ClientConfig{Timeout: 15 * time.Second}).SendRaw(
-		ctx,
-		"http://callback.red",
-		"POST / HTTP/1.1\r\n"+
-			"Host: callback.red\r\n"+
-			"Content-Type: application/x-www-form-urlencoded\r\n"+
-			"Connection: close\r\n\r\n"+
-			"key="+c.key,
-	)
+
+	rawReq := "POST / HTTP/1.1\r\n" +
+		"Host: callback.red\r\n" +
+		"Content-Type: application/x-www-form-urlencoded\r\n" +
+		"Connection: close\r\n\r\n" +
+		"key=" + c.key
+	if c.verbose >= 2 && c.onPacket != nil {
+		c.onPacket("外带", fmt.Sprintf("callback.red query  key=%s", c.key[:min(len(c.key), 8)]), rawReq)
+	}
+
+	var resp *httpclient.Response
+	var err error
+	if c.client != nil {
+		parsed, perr := httpclient.ParseRaw(rawReq)
+		if perr != nil {
+			return false, fmt.Errorf("callback.red request parse failed: %w", perr)
+		}
+		resp, err = c.client.SendParsed(ctx, "http://callback.red", parsed)
+	} else {
+		resp, err = httpclient.New(httpclient.ClientConfig{Timeout: 15 * time.Second}).SendRaw(ctx, "http://callback.red", rawReq)
+	}
 	if err != nil {
+		if c.verbose >= 2 && c.onRaw != nil {
+			c.onRaw("外带", "callback.red query failed: %v", err)
+		}
 		return false, err
+	}
+
+	if c.verbose >= 2 && c.onPacket != nil {
+		summary := fmt.Sprintf("callback.red response  status=%d  %d bytes", resp.StatusCode, len(resp.Body))
+		c.onPacket("外带", summary, resp.Raw)
 	}
 
 	// Parse JSON: {"code":200,"data":[{"subdomain":"...","type":"..."}]}

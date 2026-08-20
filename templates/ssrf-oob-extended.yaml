@@ -1,0 +1,31 @@
+id: ssrf-oob-extended
+name: "SSRF OOB Detection Extended"
+severity: "critical"
+tags: [ssrf, oob, external]
+description: |
+  扩展的 SSRF 带外验证检测。
+  使用 workflow 确保顺序执行。
+
+workflow:
+  # 步骤1：基础 SSRF 测试
+  - name: "trigger-ssrf"
+    http:
+      - raw: |
+          GET /api/fetch?url=http://{{oob}} HTTP/1.1
+          Host: {{Hostname}}
+        matchers:
+          - type: status
+            status: [200, 202, 204]
+
+  # 步骤2：验证 OOB 回调
+  - name: "verify-callback"
+    requires: ["trigger-ssrf"]
+    http:
+      - raw: |
+          GET /api/verify?label={{oob_label}} HTTP/1.1
+          Host: api.ceye.io
+        matchers:
+          - type: dsl
+            dsl:
+              - "status_code == 200"
+              - "contains(body, 'data')"

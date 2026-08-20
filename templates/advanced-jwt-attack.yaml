@@ -1,0 +1,76 @@
+id: advanced-jwt-attack
+name: "Advanced JWT Attack Detection"
+severity: "critical"
+tags: [jwt, auth, token, advanced]
+description: |
+  综合演示：workflow + range + XPath
+  这是一个完整的 JWT 攻击检测模板。
+
+workflow:
+  # 步骤1：提取 JWT token
+  - name: "extract-token"
+    http:
+      - raw: |
+          GET /api/auth HTTP/1.1
+          Host: {{Hostname}}
+        extractors:
+          - name: "jwt_token"
+            type: "xpath"
+            xpath: ['//input[@name="token"]/@value']
+          - name: "jwt_cookie"
+            type: "cookie"
+        matchers:
+          - type: status
+            status: [200]
+
+  # 步骤2：测试弱密钥（依赖步骤1）
+  - name: "test-weak-secret"
+    requires: ["extract-token"]
+    http:
+      - raw: |
+          GET /api/verify HTTP/1.1
+          Host: {{Hostname}}
+          Authorization: Bearer {{jwt_token}}
+        range:
+          key: "secret"
+          values:
+            - "secret"
+            - "password"
+            - "123456"
+            - "jwt_secret"
+            - "mysecret"
+            - "changeme"
+            - "test"
+            - "key"
+            - "admin"
+            - "jwt"
+        matchers:
+          - type: status
+            status: [200]
+        extractors:
+          - name: "token_status"
+            type: "regex"
+            regex: ['"valid":\s*(true|false)']
+
+  # 步骤3：测试算法混淆（依赖步骤1）
+  - name: "test-algorithm"
+    requires: ["extract-token"]
+    http:
+      - raw: |
+          GET /api/verify?alg={{alg}} HTTP/1.1
+          Host: {{Hostname}}
+        range:
+          key: "alg"
+          values:
+            - "none"
+            - "HS256"
+            - "HS384"
+            - "HS512"
+            - "RS256"
+            - "ES256"
+        matchers:
+          - type: dsl
+            dsl:
+              - "contains(body, 'algorithm')"
+              - "contains(body, 'not supported')"
+              - "status_code != 401"

@@ -53,6 +53,11 @@ func evalDSLs(exprs []string, ctx *MatchContext) (bool, string) {
 	return true, "dsl: matched"
 }
 
+// EvalDSL is the exported wrapper for evalDSL, used by tests.
+func EvalDSL(expr string, ctx *MatchContext) (bool, error) {
+	return evalDSL(expr, ctx)
+}
+
 func evalDSL(expr string, ctx *MatchContext) (bool, error) {
 	p := &dslParser{
 		input: strings.TrimSpace(expr),

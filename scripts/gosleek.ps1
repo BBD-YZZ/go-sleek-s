@@ -11,8 +11,8 @@ Register-ArgumentCompleter -Native -CommandName gosleek -ScriptBlock {
 
     # 解析当前命令行
     $line = $null
-    $error = $null
-    [System.Management.Automation.Language.Parser]::ParseInput($psEditor.Editor.GetContents(), [ref]$line, [ref]$error)
+    $parseError = $null
+    [System.Management.Automation.Language.Parser]::ParseInput($psEditor.Editor.GetContents(), [ref]$line, [ref]$parseError)
 
     $tokens = $line.Tokens
 

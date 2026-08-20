@@ -7,6 +7,7 @@ import (
 // FilterOptions carries the filter predicates applied to a plugin list.
 type FilterOptions struct {
 	TemplateIDs []string // also used for plugin IDs when filtering
+	PluginIDs   []string // plugin-only IDs (from --plugin flag)
 	Tags        []string
 	Severity    []string
 	ExcludeIDs  []string
@@ -16,7 +17,20 @@ type FilterOptions struct {
 // The logic mirrors the filtering done in the scan/list command entrypoints,
 // so both paths share a single implementation.
 func Filter(plugins []Plugin, opts FilterOptions) []Plugin {
-	if len(opts.TemplateIDs) == 0 && len(opts.Tags) == 0 &&
+	// Merge TemplateIDs and PluginIDs into a single ID set for plugin filtering
+	allIDs := make(map[string]bool)
+	for _, id := range opts.TemplateIDs {
+		allIDs[id] = true
+	}
+	for _, id := range opts.PluginIDs {
+		allIDs[id] = true
+	}
+	mergedIDs := make([]string, 0, len(allIDs))
+	for id := range allIDs {
+		mergedIDs = append(mergedIDs, id)
+	}
+
+	if len(mergedIDs) == 0 && len(opts.Tags) == 0 &&
 		len(opts.Severity) == 0 && len(opts.ExcludeIDs) == 0 {
 		return plugins
 	}

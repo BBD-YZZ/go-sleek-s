@@ -40,6 +40,12 @@ func NewOOBHandle(provider oob.Provider, client *httpclient.Client) OOBHandle {
 func NewCeyeHandle(label, oobURL, ceyeToken string, client *httpclient.Client) OOBHandle {
 	// 创建临时的 ceye provider 用于向后兼容
 	provider := oob.NewOobProvider("ceye", ceyeToken)
+	// 传递共享客户端和日志回调，使 ceye API 请求可被记录
+	if provider != nil && client != nil {
+		provider.SetClient(client)
+		// 注意: 需要调用方传入 onPacket/onRaw 回调，否则 OOB API 无日志
+		provider.SetVerbose(2, nil, nil)
+	}
 	h := NewOOBHandle(provider, client)
 	// 覆盖 label 和 oobURL（因为临时 provider 的 Probe 未被调用）
 	if h != nil {

@@ -13,6 +13,7 @@ import (
 )
 
 // dnslogProvider implements Provider for 47.244.138.18 (DNSLog.cn style).
+//
 // Two-step flow:
 //   1. GET /getdomain.php → returns subdomain identifier (plain text) + Set-Cookie: PHPSESSID
 //   2. GET /getrecords.php?domain=xxx → returns [["domain","ip","time"],...] JSON array
@@ -27,6 +28,9 @@ type dnslogProvider struct {
 	domain     string // full domain, e.g. "hdmwny.dnslog.cn"
 	cookie     string // PHPSESSID value
 	client     *httpclient.Client
+	verbose    int
+	onPacket   func(tag string, summary string, raw string)
+	onRaw      func(tag, format string, args ...interface{})
 }
 
 func newDNSLogProvider() *dnslogProvider {
@@ -35,26 +39,55 @@ func newDNSLogProvider() *dnslogProvider {
 	}
 }
 
-func (d *dnslogProvider) Name() string       { return "dnslog" }
-func (d *dnslogProvider) Label() string      { return d.label }
-func (d *dnslogProvider) CallbackURL() string { return d.domain }
-func (d *dnslogProvider) Token() string      { return d.cookie }
+func (d *dnslogProvider) Name() string          { return "dnslog" }
+func (d *dnslogProvider) Label() string         { return d.label }
+func (d *dnslogProvider) CallbackURL() string   { return d.domain }
+func (d *dnslogProvider) Token() string         { return d.cookie }
 
 // Setup is a no-op for dnslog — it auto-probes.
 func (d *dnslogProvider) Setup(label, domain string) {}
 
+// SetClient sets the shared HTTP client.
+func (d *dnslogProvider) SetClient(client *httpclient.Client) {
+	d.client = client
+}
+
+// SetVerbose enables request/response logging.
+func (d *dnslogProvider) SetVerbose(verbose int, onPacket func(string, string, string), onRaw func(string, string, ...interface{})) {
+	d.verbose = verbose
+	d.onPacket = onPacket
+	d.onRaw = onRaw
+}
+
+// SetAPIConfig is a no-op for dnslog.
+func (d *dnslogProvider) SetAPIConfig(apiURL, pollInterval, pollTimeout string) {}
+
 // Probe fetches a fresh subdomain and PHPSESSID from dnslog.
-// The response is a bare domain string like "hdmwny.dnslog.cn".
-// We split it to get the label (identifier prefix) and the full domain.
 func (d *dnslogProvider) Probe(ctx context.Context) error {
-	req, err := http.NewRequestWithContext(ctx, "GET", "http://47.244.138.18/getdomain.php", nil)
+	url := "http://47.244.138.18/getdomain.php"
+
+	rawReq := fmt.Sprintf("GET %s HTTP/1.1\r\nHost: 47.244.138.18\r\nConnection: close\r\n\r\n", url)
+	if d.verbose >= 2 && d.onPacket != nil {
+		d.onPacket("外带", "dnslog probe (获取子域名)", rawReq)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return err
 	}
 
-	resp, err := d.client.HTTPClient().Do(req)
-	if err != nil {
-		return err
+	var resp *http.Response
+	var httpErr error
+	if d.client != nil {
+		resp, httpErr = d.client.HTTPClient().Do(req)
+	} else {
+		resp, httpErr = http.DefaultClient.Do(req)
+	}
+	if httpErr != nil {
+		if d.verbose >= 2 && d.onRaw != nil {
+			d.onRaw("外带", "dnslog probe failed: %v", httpErr)
+		}
+		return httpErr
 	}
 	defer resp.Body.Close()
 
@@ -66,7 +99,6 @@ func (d *dnslogProvider) Probe(ctx context.Context) error {
 	d.domain = rawDomain
 
 	// Extract the bare label: "hdmwny.dnslog.cn" → "hdmwny"
-	// Use first dot as separator; if no dot, use the whole string
 	if idx := strings.Index(rawDomain, "."); idx > 0 {
 		d.label = rawDomain[:idx]
 	} else {
@@ -87,7 +119,6 @@ func (d *dnslogProvider) Probe(ctx context.Context) error {
 }
 
 // VerifyDNS checks if any DNS callback was received.
-// dnslog returns [["domain","ip","time"],...]; we check row[0] contains label.
 func (d *dnslogProvider) VerifyDNS(ctx context.Context) (bool, error) {
 	if d.domain == "" || d.cookie == "" {
 		return false, fmt.Errorf("dnslog: not probed, call Probe() first")
@@ -103,22 +134,41 @@ func (d *dnslogProvider) VerifyHTTP(ctx context.Context) (bool, error) {
 
 func (d *dnslogProvider) getRecords(ctx context.Context) (bool, error) {
 	url := fmt.Sprintf("http://47.244.138.18/getrecords.php?domain=%s", d.domain)
+
+	rawReq := fmt.Sprintf("GET %s HTTP/1.1\r\nHost: 47.244.138.18\r\nCookie: PHPSESSID=%s\r\nConnection: close\r\n\r\n", url, d.cookie)
+	if d.verbose >= 2 && d.onPacket != nil {
+		d.onPacket("外带", fmt.Sprintf("dnslog query  domain=%s", d.domain), rawReq)
+	}
+
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return false, err
 	}
 	req.AddCookie(&http.Cookie{Name: "PHPSESSID", Value: d.cookie})
 
-	resp, err := d.client.HTTPClient().Do(req)
-	if err != nil {
-		return false, err
+	var resp *http.Response
+	var httpErr error
+	if d.client != nil {
+		resp, httpErr = d.client.HTTPClient().Do(req)
+	} else {
+		resp, httpErr = http.DefaultClient.Do(req)
+	}
+	if httpErr != nil {
+		if d.verbose >= 2 && d.onRaw != nil {
+			d.onRaw("外带", "dnslog query failed: %v", httpErr)
+		}
+		return false, httpErr
 	}
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
-	respStr := strings.TrimSpace(string(body))
 
-	// Empty or "[]" means no records
+	if d.verbose >= 2 && d.onPacket != nil {
+		summary := fmt.Sprintf("dnslog response  status=%d  %d bytes", resp.StatusCode, len(body))
+		d.onPacket("外带", summary, fmt.Sprintf("HTTP/1.1 %d OK\r\n\r\n%s", resp.StatusCode, string(body)))
+	}
+
+	respStr := strings.TrimSpace(string(body))
 	if respStr == "[]" || respStr == "" {
 		return false, nil
 	}
@@ -129,12 +179,11 @@ func (d *dnslogProvider) getRecords(ctx context.Context) (bool, error) {
 		return false, err
 	}
 
-	// Exact match on row[0] (the domain field)
-	// e.g. "hdmwny.dnslog.cn" contains "hdmwny"
+	// Match: row[0] contains label (case-insensitive)
 	for _, row := range raw {
 		if len(row) >= 1 {
 			if strings.EqualFold(row[0], d.domain) ||
-				(strings.Contains(strings.ToLower(row[0]), strings.ToLower(d.label))) {
+				strings.Contains(strings.ToLower(row[0]), strings.ToLower(d.label)) {
 				return true, nil
 			}
 		}

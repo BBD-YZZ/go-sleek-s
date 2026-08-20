@@ -1,0 +1,49 @@
+id: html-injection-dom
+name: "HTML/JS Injection DOM-based Detection"
+severity: "high"
+tags: [xss, html, dom, injection]
+description: |
+  检测 HTML/JS 注入漏洞（DOM-based）。
+  使用 CSS 提取器验证回显，range 循环测试多个注入点。
+
+variables:
+  # 变量延迟解析：定义 HTML 注入载荷
+  html_payload: "<iframe src='javascript:alert(1)'>"
+  js_payload: "<script>alert(1)</script>"
+  svg_payload: "<svg/onload=alert(1)>"
+
+http:
+  - raw: |
+      GET /page?input={{html_payload}} HTTP/1.1
+      Host: {{Hostname}}
+    range:
+      key: "input"
+      values:
+        - "<iframe src='javascript:alert(1)'>"
+        - "<script>alert(1)</script>"
+        - "<svg/onload=alert(1)>"
+        - "<img src=x onerror=alert(1)>"
+        - "<body onload=alert(1)>"
+        - "<details open ontoggle=alert(1)>"
+        - "<input onfocus=alert(1) autofocus>"
+    matchers:
+      - type: dsl
+        dsl:
+          - "contains(body, 'iframe')"
+          - "contains(body, 'script')"
+          - "contains(body, 'onerror')"
+          - "contains(body, 'onload')"
+      - type: status
+        status: [200]
+
+  - raw: |
+      GET /api/render?html={{js_payload}} HTTP/1.1
+      Host: {{Hostname}}
+    matchers:
+      - type: word
+        words:
+          - "<script>alert(1)</script>"
+          - "onerror=alert"
+          - "onload=alert"
+      - type: status
+        status: [200]
