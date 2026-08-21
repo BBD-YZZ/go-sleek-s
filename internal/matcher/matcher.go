@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gosleek/gosleek/internal/placeholder"
 	"github.com/gosleek/gosleek/internal/utils"
 	"github.com/gosleek/gosleek/pkg/types"
 )
@@ -30,6 +31,12 @@ type MatchContext struct {
 	// same template, so that DSL expressions and matchers in later steps can
 	// reference them as first-class variables (e.g. `token == "{{token}}"`).
 	ExtractedVars map[string]string
+	// UnknownVarMode controls how the DSL resolves unknown variable names:
+	//  "normal" (default): returns the name string for backward compatibility
+	//                      with matchers that reference potentially-misspelled vars.
+	//  "empty": returns "" for unknown vars — used by run-if to correctly
+	//           evaluate `len(missing_var) > 0` as false.
+	UnknownVarMode string // "normal" or "empty"
 }
 
 // NewMatchContext builds a context from response parts.
@@ -716,4 +723,34 @@ func parseFloatSafe(s string) float64 {
 	s = strings.TrimSpace(s)
 	n, _ := strconv.ParseFloat(s, 64)
 	return n
+}
+
+// SubstituterMatcherPlaceholders runs the placeholder engine over the string
+// fields of each matcher so that templates can use placeholders
+// (e.g. {{oob_label}}, {{token}}) inside matcher words/regex/header.
+// YAML-loaded matcher fields bypass the placeholder engine; only req.Raw is
+// replaced. This function patches that gap.
+func SubstituterMatcherPlaceholders(matchers []types.Matcher, eng *placeholder.Engine) []types.Matcher {
+	out := make([]types.Matcher, len(matchers))
+	for i, m := range matchers {
+		out[i] = m // copy
+		out[i].Words = replaceStrSlice(out[i].Words, eng)
+		out[i].Regex = replaceStrSlice(out[i].Regex, eng)
+		out[i].Header = replaceStrSlice(out[i].Header, eng)
+		out[i].Binary = replaceStrSlice(out[i].Binary, eng)
+		out[i].JSONPath = eng.ReplaceWithEscape(out[i].JSONPath)
+		out[i].JSONField = eng.ReplaceWithEscape(out[i].JSONField)
+	}
+	return out
+}
+
+func replaceStrSlice(in []string, eng *placeholder.Engine) []string {
+	if len(in) == 0 {
+		return in
+	}
+	out := make([]string, len(in))
+	for i, s := range in {
+		out[i] = eng.ReplaceWithEscape(s)
+	}
+	return out
 }

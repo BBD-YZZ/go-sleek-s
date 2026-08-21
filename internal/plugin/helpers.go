@@ -178,7 +178,7 @@ func (r *pluginReporter) LogStep(stepName string, stepIndex int) {
 
 // LogRequest 记录 HTTP 请求，格式与 YAML 工作流一致。
 func (r *pluginReporter) LogRequest(stepName string, stepIndex int, reqIndex int, raw string) {
-	method, path := parseMethodPath(raw)
+	method, path := httpclient.ParseMethodPath(raw)
 
 	if r.logger != nil {
 		r.logger.InfoKV("workflow HTTP request sent",
@@ -236,14 +236,4 @@ func (r *pluginReporter) LogMatch(stepName string, stepIndex int, reqIndex int, 
 		r.onRaw("匹配", "workflow[%s] step[%d] req[%d]  %s  cond=%s  types=%s  evidence=%q",
 			stepName, stepIndex, reqIndex, status, condition, typesStr, evidence)
 	}
-}
-
-// parseMethodPath 从原始 HTTP 请求文本中解析 method 和 path。
-func parseMethodPath(raw string) (method, path string) {
-	firstLine := strings.SplitN(raw, "\r\n", 2)[0]
-	parts := strings.SplitN(firstLine, " ", 3)
-	if len(parts) >= 2 {
-		return parts[0], parts[1]
-	}
-	return "?", "?"
 }

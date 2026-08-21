@@ -1,7 +1,7 @@
 # gosleek YAML 模板编写手册（进阶篇）
 
-> 版本：v1.5.1
-> 最后更新：2026-08-18
+> 版本：v1.5.2
+> 最后更新：2026-08-21
 > 目标读者：漏洞研究员、安全工程师、渗透测试人员
 > 前置知识：了解 HTTP 协议基础、YAML 语法基础；建议先阅读 `gosleek-yaml-template-guide.md`
 
@@ -55,7 +55,7 @@ gosleek 的并发模型是**模板级并行、请求级串行**：
 
 ### 1.2 代码证据
 
-在 `internal/engine/engine.go` 的 `executeHTTP` 方法中（第 534 行）：
+在 `internal/engine/engine.go` 的 `executeHTTP` 方法中（第 545 行）：
 
 ```go
 // executeHTTP 对模板的所有 HTTP 请求块进行顺序执行
@@ -829,41 +829,8 @@ http:
 | `reverse(str)` | 反转字符串 | `{{reverse("test")}}` |
 | `concat(str1, str2)` | 拼接字符串 | `{{concat("a", "b")}}` |
 | `repeat(str, n)` | 重复字符串 | `{{repeat("a", 5)}}` |
-| `upper(str)` | 转大写（别名） | `{{upper("test")}}` |
-| `lower(str)` | 转小写（别名） | `{{lower("TEST")}}` |
 
-### 6.5 自注册自定义函数（RegisterFunction）
-
-模板内置函数不足以满足所有场景时，可以通过 `RegisterFunction` 在 Go 代码中注册自定义函数，然后在 YAML 模板的占位符中直接使用。
-
-**注册方式（Go 代码）**：
-
-```go
-eng.RegisterFunction("myfunc", func(args ...string) string {
-    // args[0] = 第一个参数, args[1] = 第二个参数...
-    return fmt.Sprintf("result: %s-%s", args[0], args[1])
-})
-```
-
-**模板中使用**：
-
-```yaml
-variables:
-  result: "{{myfunc('hello', 'world')}}"
-http:
-  - raw: |
-      GET /api/test?r={{result}} HTTP/1.1
-      Host: {{Hostname}}
-```
-
-**规则**：
-- 函数名不区分大小写（引擎内部统一转小写匹配）
-- 参数通过逗号分隔，字符串参数需加引号：`{{myfunc('arg1', 'arg2')}}`
-- 函数返回值必须是字符串（非字符串会自动格式化）
-- 重复注册同名函数会覆盖之前的定义
-- 自定义函数仅在当前引擎实例中有效，不影响其他扫描任务
-
----
+### 6.5 变量优先级
 
 ## 7. Wordlist 字典爆破
 
@@ -975,7 +942,7 @@ http:
 ---
 
 ## 9. DSL 表达式完全指南
-### 8.1 基本语法
+### 9.1 基本语法
 
 ```
 status_code == 200
@@ -987,14 +954,14 @@ status_code == 200 && contains(body, 'admin')
 len(token) > 0 || status_code == 403
 ```
 
-### 8.2 运算符优先级
+### 9.2 运算符优先级
 
 ```
 ! (取反) > && (与) > \|\| (或)
 == != > < > <= >=
 ```
 
-### 8.3 完整示例
+### 9.3 完整示例
 
 ```yaml
 matchers:
@@ -1023,7 +990,6 @@ matchers-condition: "and"
 | `json-word` | JSON 字段匹配 | `json-path: data`, `json-field: name` |
 | `json-2darray` | JSON 二维数组 | `json-2darray-column: 0` |
 
-### 11.2 用字段
 ### 10.2 通用字段
 
 ```yaml
@@ -1038,7 +1004,6 @@ matchers-condition: "and"
 ---
 
 ## 11. 提取器 Extractor 完全指南
-### 12.1 型总览
 ### 11.1 类型总览
 
 | 类型 | 用途 | 关键参数 |
@@ -1051,7 +1016,6 @@ matchers-condition: "and"
 | `xpath` | XPath 提取 | `xpath: ['//input/@value']` |
 | `css` | CSS 选择器提取 | `css: [".class"]` |
 
-### 12.2 val 键值提取详解
 ### 11.2 kval 键值提取详解
 
 从响应头或 body 中提取指定键名的值。`kval` 提取器会搜索响应中的所有头信息（包括 `Set-Cookie` 头），找到第一个匹配的键名并返回其值。
@@ -1078,7 +1042,6 @@ extractors:
 - 不需要正则表达式的简单提取
 - 需要从 Set-Cookie 头中提取 cookie 值但不想使用 `cookie` 类型
 
-### 12.3 ookie Cookie 提取详解
 ### 11.3 cookie Cookie 提取详解
 
 从 `Set-Cookie` 响应头中提取指定 cookie 的值。
@@ -1103,7 +1066,6 @@ extractors:
 - `cookie` 类型专门处理 `Set-Cookie` 头，自动解析 `key=value` 格式
 - `kval` 类型会搜索所有响应头，包括 `Set-Cookie`，但需要指定完整的头名称
 
-### 12.4 取器变量传递
 ### 11.4 提取器变量传递
 
 ```yaml
@@ -1134,7 +1096,6 @@ workflow:
 ---
 
 ## 12. OOB 带外验证
-### 13.1 持的 Provider
 ### 12.1 支持的 Provider
 
 | Provider | 配置要求 | 特点 |
@@ -1143,7 +1104,6 @@ workflow:
 | `dnslog` | 无需配置 | 自动获取子域名 |
 | `callbackred` | 无需配置 | 自动获取 key |
 
-### 13.2 OB 模板结构
 ### 12.2 OOB 模板结构
 
 ```yaml
@@ -1182,7 +1142,6 @@ workflow:
 ---
 
 ## 13. 完整模板编写最佳实践
-### 14.1 TTP 模式模板
 ### 13.1 HTTP 模式模板
 
 ```yaml
@@ -1209,7 +1168,6 @@ http:
     matchers-condition: "and"
 ```
 
-### 14.2 orkflow 模式模板
 ### 13.2 Workflow 模式模板
 
 ```yaml
@@ -1255,7 +1213,6 @@ workflow:
         matchers-condition: "and"
 ```
 
-### 14.3 用 Probe + Run-If 的模板
 ### 13.3 使用 Probe + Run-If 的模板
 
 ```yaml
@@ -1304,7 +1261,6 @@ workflow:
 ---
 
 ## 14. 调试技巧
-### 15.1 志级别
 ### 14.1 日志级别
 
 ```bash
@@ -1318,7 +1274,6 @@ gosleek scan -t http://example.com -v
 gosleek scan -t http://example.com -vv
 ```
 
-### 15.2 用 -vv 查看执行细节
 ### 14.2 使用 -vv 查看执行细节
 
 ```
@@ -1329,7 +1284,6 @@ gosleek scan -t http://example.com -vv
 [INFO] matched  target=http://example.com  template=simple-xss  severity=high
 ```
 
-### 15.3 见问题排查
 ### 14.3 常见问题排查
 
 | 问题 | 原因 | 解决 |
@@ -1351,10 +1305,13 @@ gosleek scan -t http://example.com -vv
 
 **答**：
 - HTTP 模式：所有请求顺序执行，结果按 `matchers-condition` 聚合
+- Workflow 模式：步骤间可通过 `requires` 建立依赖，步骤 1 提取的变量供步骤 2+ 使用
 
 ### Q3: Probe 和 Run-If 有什么区别？
 
 **答**：
+- **Probe**：请求**会发送**，提取器正常执行，但匹配结果不计入最终判定。适合"先探测再验证"的场景。
+- **Run-If**：条件为 false 时请求**不发送**。适合"依赖前置变量才执行"的场景。
 
 ### Q4: 如何在 Workflow 中传递变量？
 
@@ -1363,10 +1320,14 @@ gosleek scan -t http://example.com -vv
 ### Q5: Range 和 Wordlist 有什么区别？
 
 **答**：
+- **Range**：在 YAML 中直接声明一组值，每次迭代替换一个占位符。适合小规模、固定值的场景。
+- **Wordlist**：从外部文件读取字典，支持 URL/Base64/Hex 编码。适合大规模爆破场景。
+- 两者可以组合使用，但 Range 优先于 Wordlist 执行。
 
 ### Q6: 为什么我的提取器变量在后续步骤中为空？
 
 **答**：检查以下事项：
+1. 前置步骤的 extractors 是否正确定义
 2. regex 是否正确匹配响应内容
 3. 使用 `-vv` 查看详细日志
 
@@ -1378,7 +1339,7 @@ gosleek scan -t http://example.com -vv
 
 **答**：
 - **HTTP 模式**：`stop-at-first-match` **完全无效**，所有请求块都会被执行
-  - 请求级：同一步骤内第一个请求命中后停止发送后续请求
+- **Workflow 模式**：两层作用域——请求级（`HTTPRequest.StopAtFirstMatch`）在步骤内命中后停止后续请求；步骤级（`WorkflowStep.StopAtFirstMatch`）在步骤失败后立即终止整个 Workflow
 
 ### Q9: 模板级 Matcher/Extractor 如何使用？
 
@@ -1396,10 +1357,10 @@ gosleek scan -t http://example.com -vv
 
 ### Q11: 哪些 YAML 字段是死字段（定义了但无效）？
 
-**答**：以下字段在类型定义中存在但从未使用，**已删除**：
-- `threads`（`HTTPRequest`）：定义了但从未读取，已从类型定义中删除
+**答**：以下字段在类型定义中存在但引擎不读取：
+- `threads`（`HTTPRequest`）：定义了但从未使用，不影响任何行为
 
-其他曾经标注为死字段的项（`rate-limit`、`name`、`internal`、`WorkflowStep.template`）已在 v1.5.1 中实现。
+其他曾经标注为死字段的项（`rate-limit`、`name`、`internal`）已在 v1.5.1 中实现。`threads` 字段仍存在于类型定义中但引擎不读取。
 
 ### Q12: 如何让后续的 DSL matcher 使用前置请求的提取变量？
 
@@ -1467,7 +1428,7 @@ http:
 **层次 1：请求级**（`HTTPRequest.StopAtFirstMatch`）
 
 ```go
-// workflow.go:328
+// workflow.go:376
 if req.StopAtFirstMatch && matched {
     break  // 跳出当前步骤内的请求循环
 }
@@ -1478,7 +1439,7 @@ if req.StopAtFirstMatch && matched {
 **层次 2：步骤级**（`WorkflowStep.StopAtFirstMatch`）
 
 ```go
-// workflow.go:146
+// workflow.go:161
 if !stepMatched {
     allMatched = false
     if step.StopAtFirstMatch {
@@ -1527,6 +1488,8 @@ workflow:
 
 ### 16.2 Redirects 重定向控制
 
+> **注意**：YAML 字段名是 `redirects`（全小写），不是 `rRedirects`。
+
 #### 全局配置
 
 ```bash
@@ -1534,7 +1497,7 @@ workflow:
 gosleek scan -t http://example.com
 
 # 不跟随重定向
-gosleek scan -t http://example.com --follow-rRedirects=false
+gosleek scan -t http://example.com --follow-redirects=false
 ```
 
 #### 请求级覆盖
@@ -1544,7 +1507,7 @@ http:
   - raw: |
       GET /api/login HTTP/1.1
       Host: {{Hostname}}
-    rRedirects: false          # 此请求不跟随重定向
+    redirects: false          # 此请求不跟随重定向
     matchers:
       - type: status
         status: [301, 302]    # 期望收到重定向
@@ -1552,7 +1515,7 @@ http:
   - raw: |
       GET /api/protected HTTP/1.1
       Host: {{Hostname}}
-    rRedirects: true           # 此请求跟随重定向（默认）
+    redirects: true           # 此请求跟随重定向（默认）
     matchers:
       - type: status
         status: [200]
@@ -1561,7 +1524,7 @@ http:
 **优先级规则**：
 
 ```
-请求级 rRedirects > 全局 --follow-rRedirects flag > 默认行为
+请求级 redirects > 全局 --follow-redirects flag > 默认行为
 ```
 
 - `nil`（未设置）：使用全局配置
@@ -1656,7 +1619,7 @@ http:
 **变量传递范围**：
 - HTTP 模式：同一模板内所有请求块共享 `allExtracted` map
 
-### 17.5 Workflow 的 matchers-condition 优先级（A2 Fix）
+### 16.5 Workflow 的 matchers-condition 优先级（A2 Fix）
 
 在 Workflow 模式中，当多个 HTTP 请求块存在时，**最后一个**请求块的 `matchers-condition` 决定整个步骤的聚合方式：
 
@@ -1698,7 +1661,7 @@ workflow:
         matchers-condition: "and"     # ← 生效！决定整个步骤的聚合条件
 ```
 
-### 17.6 RawRequest/RawResponse 记录
+### 16.6 RawRequest/RawResponse 记录
 
 当匹配成功时，引擎会自动记录**第一个命中请求**的原始请求和响应数据，可用于后续复放（replay）：
 
@@ -1722,7 +1685,7 @@ return &types.Result{
 - 分析原始响应内容
 - 生成漏洞报告
 
-### 17.7 输出格式
+### 16.7 输出格式
 
 支持多种输出格式：
 
@@ -1746,7 +1709,7 @@ gosleek scan -t http://example.com -o report.md --format markdown
 gosleek scan -t http://example.com -o results.txt --format txt
 ```
 
-### 17.8 脱敏输出（Redact）
+### 16.8 脱敏输出（Redact）
 
 `--redact` 标志可遮蔽结果中的敏感信息：
 
@@ -1768,7 +1731,7 @@ extracted:
   jwt_token: "eyJhbG...J9..."
 ```
 
-### 17.9 请求级 Rate-Limit（rate-limit）
+### 16.9 请求级 Rate-Limit（rate-limit）
 
 默认全局限速通过 `config.yaml` 的 `rate-limit` 配置，也可以对**单个请求**设置限速，优先级高于全局配置。
 
@@ -1799,7 +1762,7 @@ http:
 
 ---
 
-### 17.10 请求级名称（name）
+### 16.10 请求级名称（name）
 
 每个 HTTP 请求块可设置 `name` 字段，用于在 `-v` / `-vv` 日志中标识请求。
 
@@ -1836,7 +1799,7 @@ http:
 [响应] csrf-token-missing req[0]  status=200  12ms
 ```
 
-### 17.11 内部提取器（internal）
+### 16.11 内部提取器（internal）
 
 内部提取器（`internal: true`）正常执行并存储到共享作用域，供后续请求使用，但**不出现在最终报告的 `extracted` 字段中**。
 
@@ -1871,30 +1834,11 @@ http:
 
 ---
 
-### 17.12 Workflow 步骤引用模板（template）
+### 16.12 Workflow 步骤引用模板
 
-Workflow 步骤可通过 `template` 字段引用其他 YAML 模板，实现模板复用。
+> **注意**：`WorkflowStep.Template` 字段（类型定义中存在）目前**尚未实现**。Workflow 步骤之间的变量传递通过 `requires` + 提取器实现，而非模板引用。
 
-```yaml
-workflow:
-  - name: "extract-token"
-    requires: []
-    template: "extract-token"    # 引用同目录的 extract-token.yaml
-
-  - name: "verify-token"
-    requires: ["extract-token"]
-    template: "verify-token"     # 引用同目录的 verify-token.yaml
-    stop-at-first-match: true
-```
-
-**说明**：
-- `template` 值为被引用模板的 `id`（YAML 文件 ID），不是文件名
-- 被引用模板独立加载，共享 `{{Hostname}}`、`{{oob}}` 等占位符
-- 找不到对应 ID 时输出 WARNING 日志并跳过该步骤
-
----
-
-### 17.13 日志格式优化（step 名称显示）
+### 16.13 日志格式优化（step 名称显示）
 
 从 v1.5.1 起，日志输出新增了 step 名称标识，使 workflow 和插件的日志更易读：
 
@@ -1928,11 +1872,11 @@ workflow:
 
 ---
 
-### 17.14 已删除的死字段
+### 16.14 已删除的死字段
 
 | 字段 | 位置 | 原因 |
 |------|------|------|
-| `threads` | `HTTPRequest` | 从未使用，已从类型定义删除 |
+| `threads` | `HTTPRequest` | 字段存在于类型定义中（默认值 0），但引擎不读取此字段，不影响任何行为 |
 
 ---
 
@@ -1958,8 +1902,10 @@ classification:
 # ============ 预过滤 ============
 fingerprints:
   - title: "Server Name"
+    body: "Spring Boot"
     header:
       - "Server: Apache-Coyote/1.1"
+      - "X-Application-Context"
 
 # ============ 变量 ============
 variables:
@@ -1990,7 +1936,7 @@ http:
       - key: "word"
         path: "wordlists/words.txt"
     timeout: 10
-    rRedirects: true           # 重定向控制（nil=使用全局）
+    redirects: true           # 重定向控制（nil=使用全局）
     rate-limit: 10          # 请求级限速
     name: "my-request"      # 请求命名
     timeout: 10
@@ -2019,4 +1965,4 @@ extractors: [...]
 
 ---
 
-*本文档基于 gosleek v1.5.2 代码分析编写，涵盖了 HTTP 模式、Workflow 模式、Probe、Run-If、Range、Wordlist、body-type、DSL、Matcher、Extractor、OOB 等核心机制的完整原理和使用方法。v1.5.2 新增：自注册自定义函数（RegisterFunction）、表单请求体自动构造（body-type form/multipart）。*
+*本文档基于 gosleek v1.5.2 代码分析编写，涵盖了 HTTP 模式、Workflow 模式、Probe、Run-If、Range、Wordlist、body-type、DSL、Matcher、Extractor、OOB 等核心机制的完整原理和使用方法。*

@@ -30,6 +30,7 @@ type TargetFingerprint struct {
 	Titles  []string
 	Headers map[string]string
 	Server  string
+	Body    string // raw response body for body-based fingerprint matching
 	// Technologies detected
 	TechStack map[string]bool
 }
@@ -78,6 +79,9 @@ func (d *Detector) Detect(ctx context.Context, target string) *TargetFingerprint
 		return fp
 	}
 
+	// Store raw body for fingerprint matching
+	fp.Body = resp.Body
+
 	// Extract server header
 	if server := resp.GetHeader("Server"); server != "" {
 		fp.Server = server
@@ -102,31 +106,115 @@ func (d *Detector) Detect(ctx context.Context, target string) *TargetFingerprint
 }
 
 // Matches checks if a target's fingerprint matches a template's fingerprint rules.
+//
+// Matching semantics:
+//   - Rules are OR: any single rule matching causes the template to run.
+//   - Within a rule, fields are AND: ALL specified fields must match.
+//   - Empty fields are ignored (treated as wildcard).
+//
+// Example: title + header in the same rule means BOTH must match.
 func (d *Detector) Matches(fp *TargetFingerprint, rules []types.FingerprintRule) bool {
 	if len(rules) == 0 {
 		return true // no fingerprint rules = always match
 	}
 	for _, rule := range rules {
-		if rule.Title != "" {
-			for _, title := range fp.Titles {
-				if contains(title, rule.Title) {
-					return true
+		if ruleMatch(fp, rule) {
+			return true
+		}
+	}
+	return false
+}
+
+// ruleMatch checks if a single fingerprint rule matches the target.
+// All non-empty fields in the rule must match (AND logic).
+func ruleMatch(fp *TargetFingerprint, rule types.FingerprintRule) bool {
+	// Check title: substring match against any extracted title
+	if rule.Title != "" {
+		matched := false
+		for _, title := range fp.Titles {
+			if contains(title, rule.Title) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+
+	// Check body: substring match against raw response body
+	if rule.Body != "" {
+		if !contains(fp.Body, rule.Body) {
+			return false
+		}
+	}
+
+	// Check headers: support both old and new formats
+	// Old format: [key, pattern] — exactly 2 elements
+	// New format: ["Key: value", "Key"] — each element independently parsed
+	var headerMatched bool
+	if len(rule.Header) == 2 {
+		// Try old format first: [key, pattern]
+		key := strings.TrimSpace(rule.Header[0])
+		pattern := strings.TrimSpace(rule.Header[1])
+		if key != "" && pattern != "" {
+			val := headerValue(fp.Headers, key)
+			if matchPattern(val, pattern) {
+				headerMatched = true
+			}
+		}
+	}
+	if !headerMatched {
+		// New format: parse each element independently, skip empty entries
+		nonEmpty := make([]string, 0, len(rule.Header))
+		for _, h := range rule.Header {
+			if strings.TrimSpace(h) != "" {
+				nonEmpty = append(nonEmpty, h)
+			}
+		}
+		for _, h := range nonEmpty {
+			if idx := strings.Index(h, ":"); idx >= 0 {
+				// "Key: Value" format
+				key := strings.TrimSpace(h[:idx])
+				pattern := strings.TrimSpace(h[idx+1:])
+				if key == "" {
+					continue
+				}
+				val := headerValue(fp.Headers, key)
+				if !matchPattern(val, pattern) {
+					return false
+				}
+			} else {
+				// Key-only: check if header exists (case-insensitive)
+				if !headerExists(fp.Headers, h) {
+					return false
 				}
 			}
 		}
-		if len(rule.Header) >= 2 {
-			key := rule.Header[0]
-			pattern := rule.Header[1]
-			val := ""
-			for k, v := range fp.Headers {
-				if strings.EqualFold(k, key) {
-					val = v
-					break
-				}
-			}
-			if matchPattern(val, pattern) {
-				return true
-			}
+		// All non-empty headers matched
+		if len(nonEmpty) > 0 {
+			headerMatched = true
+		}
+	}
+
+	return true
+}
+
+// headerValue returns the value of a header (case-insensitive).
+func headerValue(headers map[string]string, key string) string {
+	for k, v := range headers {
+		if strings.EqualFold(k, key) {
+			return v
+		}
+	}
+	return ""
+}
+
+// headerExists reports whether a header key exists (case-insensitive).
+func headerExists(headers map[string]string, key string) bool {
+	for k := range headers {
+		if strings.EqualFold(k, key) {
+			return true
 		}
 	}
 	return false

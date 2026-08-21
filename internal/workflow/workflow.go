@@ -173,19 +173,164 @@ func (e *Executor) Execute(ctx context.Context, steps []types.WorkflowStep, targ
 	return allMatched, evidence, extracted
 }
 
+// sendWorkflowRequest sends a single request and processes its response.
+// This is extracted to avoid duplicating the send/extract/match logic in
+// both the path-mode and raw-mode branches.
+func (e *Executor) sendWorkflowRequest(ctx context.Context, req types.HTTPRequest, rawReq string, target string, eng *placeholder.Engine,
+	stepIdx int, stepName string, extracted map[string]string,
+) (bool, string) {
+
+	parsed, err := httpclient.ParseRaw(rawReq)
+	if err != nil {
+		if e.logger != nil {
+			e.logger.WarnKV("workflow parse request failed",
+				"step", stepName, "req", 0, "error", err.Error())
+		}
+		return false, ""
+	}
+
+	reqTimeout := e.timeout
+	if req.Timeout > 0 {
+		reqTimeout = req.Timeout
+	}
+
+	// Log request before sending — Burp-style packet
+	resolvedURL := httpclient.ResolveURL(target, parsed)
+	if e.logger != nil {
+		e.logger.InfoKV("workflow HTTP request sent",
+			"step", stepName, "step_index", stepIdx, "req", 0,
+			"url", resolvedURL, "method", parsed.Method)
+	}
+	if e.verbose >= 2 && e.onPacket != nil {
+		summary := fmt.Sprintf("workflow[%s] step[%d] req[0]  %s %s  %d bytes",
+			stepName, stepIdx, parsed.Method, resolvedURL, len(rawReq))
+		e.onPacket("请求", summary, rawReq)
+	}
+
+	reqCtx, cancel := context.WithTimeout(ctx, time.Duration(reqTimeout)*time.Second)
+	resp, err := e.client.SendParsed(reqCtx, target, parsed)
+	cancel()
+	if err != nil {
+		if e.logger != nil {
+			e.logger.WarnKV("workflow HTTP request failed",
+				"step", stepName, "step_index", stepIdx, "req", 0, "error", err.Error())
+		}
+		return false, ""
+	}
+
+	// Log response — Burp-style packet
+	if e.logger != nil {
+		e.logger.InfoKV("workflow HTTP response received",
+			"step", stepName, "step_index", stepIdx, "req", 0,
+			"status", resp.StatusCode, "time_ms", resp.Time.Milliseconds(),
+			"bytes", len(resp.Body))
+	}
+	if e.verbose >= 2 && e.onPacket != nil {
+		summary := fmt.Sprintf("workflow[%s] step[%d] req[0]  status=%d  %s  %d bytes",
+			stepName, stepIdx, resp.StatusCode,
+			resp.Time.Round(time.Millisecond), len(resp.Body))
+		e.onPacket("响应", summary, resp.Raw)
+	}
+
+	// For OOB verify steps (queries to api.ceye.io), log body regardless
+	if strings.Contains(strings.ToLower(parsed.Headers["Host"]), "ceye.io") {
+		bodyDisplay := resp.Body
+		if len(bodyDisplay) > 800 {
+			bodyDisplay = bodyDisplay[:800] + "\n... (truncated, total " + fmt.Sprintf("%d", len(resp.Body)) + " bytes)"
+		}
+		if e.logger != nil {
+			e.logger.DebugKV("ceye.io response",
+				"step", stepName, "req", 0, "status", resp.StatusCode,
+				"body", bodyDisplay)
+		}
+	}
+
+	matchCtx := matcher.NewMatchContextWithCookies(
+		resp.StatusCode,
+		resp.Body,
+		resp.AllHeaders(),
+		resp.GetHeader("Set-Cookie"),
+		resp.Time,
+	)
+	// Carry forward extracted variables for DSL interpolation across steps
+	matchCtx.ExtractedVars = extracted
+
+	// Extract
+	ext := matcher.Extract(req.Extractors, matchCtx)
+	for k, v := range ext {
+		extracted[k] = v
+		eng.SetExtracted(k, v)
+	}
+
+	// Match — first substitute placeholders inside each matcher's
+	// string fields (Words/Regex/Header/JSONPath/JSONField etc.)
+	// because YAML-loaders never run them through the placeholder
+	// engine; only the raw HTTP request does.
+	matchers := matcher.SubstituterMatcherPlaceholders(req.Matchers, eng)
+	matched, ev := matcher.Evaluate(matchers, req.MatchersCondition, matchCtx)
+
+	// Log matcher result
+	if e.logger != nil {
+		mTypes := make([]string, 0, len(req.Matchers))
+		for _, m := range req.Matchers {
+			mTypes = append(mTypes, m.Type)
+		}
+		if matched {
+			e.logger.InfoKV("workflow matcher PASS",
+				"step", stepName, "step_index", stepIdx, "req", 0,
+				"condition", req.MatchersCondition,
+				"types", strings.Join(mTypes, ","), "evidence", ev)
+		} else {
+			e.logger.InfoKV("workflow matcher FAIL",
+				"step", stepName, "step_index", stepIdx, "req", 0,
+				"condition", req.MatchersCondition,
+				"types", strings.Join(mTypes, ","))
+		}
+	}
+	if e.verbose >= 2 && e.onRaw != nil {
+		status := "PASS"
+		if !matched {
+			status = "FAIL"
+		}
+		mTypes := make([]string, 0, len(req.Matchers))
+		for _, m := range req.Matchers {
+			mTypes = append(mTypes, m.Type)
+		}
+		e.onRaw("匹配", "workflow[%s] step[%d] req[0]  %s  cond=%s  types=%s  evidence=%q",
+			stepName, stepIdx, status, req.MatchersCondition,
+			strings.Join(mTypes, ","), ev)
+	}
+
+	return matched, ev
+}
+
 func (e *Executor) executeHTTPBlocks(ctx context.Context, blocks []types.HTTPRequest, target string, eng *placeholder.Engine, stepIdx int, stepName string) (bool, string, map[string]string) {
 	var results []bool
 	var evidence []string
 	extracted := make(map[string]string)
+	// copiedExtracted is returned on early exits to preserve extracted variables
+	// collected before the abort (e.g. context cancellation mid-step).
+	copiedExtracted := extracted
 
 	for i, req := range blocks {
 		select {
 		case <-ctx.Done():
-			return false, "", extracted
+			return false, "", copiedExtracted
 		default:
 		}
 
-		// Replace placeholders
+		// run-if: skip this request block if condition is false.
+		if req.RunIf != "" {
+			if !evalRunIf(req.RunIf, extracted, eng) {
+				if e.logger != nil {
+					e.logger.InfoKV("workflow request skipped (run-if false)",
+						"step", stepName, "req", i, "run-if", req.RunIf)
+				}
+				continue
+			}
+		}
+
+		// Replace placeholders in raw request
 		rawReq := eng.ReplaceWithEscape(req.Raw)
 		if rawReq == "" {
 			// Merge per-request headers with global headers
@@ -212,272 +357,97 @@ func (e *Executor) executeHTTPBlocks(ctx context.Context, blocks []types.HTTPReq
 						continue
 					}
 
-					// Parse and send
-					parsed, err := httpclient.ParseRaw(pathReq)
-					if err != nil {
-						if e.logger != nil {
-							e.logger.WarnKV("workflow parse request failed",
-								"step", stepName, "req", i, "error", err.Error())
+					// Range injection on path mode: replace placeholder FIRST, then resolve engine vars
+					if req.Range != nil && len(req.Range.Values) > 0 {
+						rangeSent := false
+						for _, val := range req.Range.Values {
+							rangeReq := strings.ReplaceAll(pathReq, "{{"+req.Range.Key+"}}", val)
+							if rangeReq == pathReq {
+								// Placeholder not found in this path — skip
+								continue
+							}
+							rangeReq = eng.ReplaceWithEscape(rangeReq)
+							if rangeReq == "" {
+								continue
+							}
+							matched, _ := e.sendWorkflowRequest(ctx, req, rangeReq, target, eng, stepIdx, stepName, extracted)
+							results = append(results, matched)
+							rangeSent = true
+							if req.StopAtFirstMatch && matched {
+								break
+							}
 						}
-						continue
-					}
-
-					reqTimeout := e.timeout
-					if req.Timeout > 0 {
-						reqTimeout = req.Timeout
-					}
-
-					// Log request before sending — Burp-style packet
-					resolvedURL := httpclient.ResolveURL(target, parsed)
-					if e.logger != nil {
-						e.logger.InfoKV("workflow HTTP request sent",
-							"step", stepName, "step_index", stepIdx, "req", i,
-							"url", resolvedURL, "method", parsed.Method)
-					}
-					if e.verbose >= 2 && e.onPacket != nil {
-						summary := fmt.Sprintf("workflow[%s] step[%d] req[%d]  %s %s  %d bytes",
-							stepName, stepIdx, i, parsed.Method, resolvedURL, len(pathReq))
-						e.onPacket("请求", summary, pathReq)
-					}
-
-					reqCtx, cancel := context.WithTimeout(ctx, time.Duration(reqTimeout)*time.Second)
-					resp, err := e.client.SendParsed(reqCtx, target, parsed)
-					cancel()
-					if err != nil {
-						if e.logger != nil {
-							e.logger.WarnKV("workflow HTTP request failed",
-								"step", stepName, "step_index", stepIdx, "req", i, "error", err.Error())
+						if !rangeSent {
+							// No placeholder matched — send original
+							matched, ev := e.sendWorkflowRequest(ctx, req, pathReq, target, eng, stepIdx, stepName, extracted)
+							results = append(results, matched)
+							if ev != "" {
+								evidence = append(evidence, ev)
+							}
 						}
-						results = append(results, false)
-						continue
-					}
-
-					// Log response — Burp-style packet
-					if e.logger != nil {
-						e.logger.InfoKV("workflow HTTP response received",
-							"step", stepName, "step_index", stepIdx, "req", i,
-							"status", resp.StatusCode, "time_ms", resp.Time.Milliseconds(),
-							"bytes", len(resp.Body))
-					}
-					if e.verbose >= 2 && e.onPacket != nil {
-						summary := fmt.Sprintf("workflow[%s] step[%d] req[%d]  status=%d  %s  %d bytes",
-							stepName, stepIdx, i, resp.StatusCode,
-							resp.Time.Round(time.Millisecond), len(resp.Body))
-						e.onPacket("响应", summary, resp.Raw)
-					}
-
-					// For OOB verify steps (queries to api.ceye.io), log body regardless
-					if strings.Contains(strings.ToLower(parsed.Headers["Host"]), "ceye.io") {
-						bodyDisplay := resp.Body
-						if len(bodyDisplay) > 800 {
-							bodyDisplay = bodyDisplay[:800] + "\n... (truncated, total " + fmt.Sprintf("%d", len(resp.Body)) + " bytes)"
-						}
-						if e.logger != nil {
-							e.logger.DebugKV("ceye.io response",
-								"step", stepName, "req", i, "status", resp.StatusCode,
-								"body", bodyDisplay)
+					} else {
+						matched, ev := e.sendWorkflowRequest(ctx, req, pathReq, target, eng, stepIdx, stepName, extracted)
+						results = append(results, matched)
+						if ev != "" {
+							evidence = append(evidence, ev)
 						}
 					}
-
-					matchCtx := matcher.NewMatchContextWithCookies(
-						resp.StatusCode,
-						resp.Body,
-						resp.AllHeaders(),
-						resp.GetHeader("Set-Cookie"),
-						resp.Time,
-					)
-					// Carry forward extracted variables for DSL interpolation across steps
-					matchCtx.ExtractedVars = extracted
-
-					// Extract
-					ext := matcher.Extract(req.Extractors, matchCtx)
-					for k, v := range ext {
-						extracted[k] = v
-						eng.SetExtracted(k, v)
-					}
-
-					// Match — first substitute placeholders inside each matcher's
-					// string fields (Words/Regex/Header/JSONPath/JSONField etc.)
-					// because YAML-loaders never run them through the placeholder
-					// engine; only the raw HTTP request does.
-					matchers := substituteMatcherPlaceholders(req.Matchers, eng)
-					matched, ev := matcher.Evaluate(matchers, req.MatchersCondition, matchCtx)
-
-					// Log matcher result
-					if e.logger != nil {
-						mTypes := make([]string, 0, len(req.Matchers))
-						for _, m := range req.Matchers {
-							mTypes = append(mTypes, m.Type)
-						}
-						if matched {
-							e.logger.InfoKV("workflow matcher PASS",
-								"step", stepName, "step_index", stepIdx, "req", i,
-								"condition", req.MatchersCondition,
-								"types", strings.Join(mTypes, ","), "evidence", ev)
-						} else {
-							e.logger.InfoKV("workflow matcher FAIL",
-								"step", stepName, "step_index", stepIdx, "req", i,
-								"condition", req.MatchersCondition,
-								"types", strings.Join(mTypes, ","))
-						}
-					}
-					if e.verbose >= 2 && e.onRaw != nil {
-						status := "PASS"
-						if !matched {
-							status = "FAIL"
-						}
-						mTypes := make([]string, 0, len(req.Matchers))
-						for _, m := range req.Matchers {
-							mTypes = append(mTypes, m.Type)
-						}
-						e.onRaw("匹配", "workflow[%s] step[%d] req[%d]  %s  cond=%s  types=%s  evidence=%q",
-							stepName, stepIdx, i, status, req.MatchersCondition,
-							strings.Join(mTypes, ","), ev)
-					}
-
-					results = append(results, matched)
-					if ev != "" {
-						evidence = append(evidence, ev)
-					}
-
-					if req.StopAtFirstMatch && matched {
-						break
-					}
+					continue
 				}
-				continue
 			}
 			if rawReq == "" {
 				continue
 			}
 		} else {
+			// Range injection: iterate over values and replace placeholder FIRST
+			// (must be done before placeholder substitution so that {{key}}
+			// patterns survive the variable resolution)
+			if req.Range != nil && len(req.Range.Values) > 0 {
+				rangeSent := false
+				for _, val := range req.Range.Values {
+					select {
+					case <-ctx.Done():
+						return false, "", copiedExtracted
+					default:
+					}
+					rangeReq := strings.ReplaceAll(rawReq, "{{"+req.Range.Key+"}}", val)
+					if rangeReq == rawReq {
+						// Placeholder not found — skip this value
+						continue
+					}
+					// Apply placeholder substitution AFTER range replacement
+					finalReq := eng.ReplaceWithEscape(rangeReq)
+					if finalReq == "" {
+						continue
+					}
+					// Inject global headers into raw request
+					finalReq = injectGlobalHeaders(finalReq, e.globalHeaders)
+					matched, ev := e.sendWorkflowRequest(ctx, req, finalReq, target, eng, stepIdx, stepName, extracted)
+					results = append(results, matched)
+					if ev != "" {
+						evidence = append(evidence, ev)
+					}
+					rangeSent = true
+					if req.StopAtFirstMatch && matched {
+						break
+					}
+				}
+				if !rangeSent {
+					// Placeholder not found in any value — send original
+					finalReq := injectGlobalHeaders(rawReq, e.globalHeaders)
+					matched, ev := e.sendWorkflowRequest(ctx, req, finalReq, target, eng, stepIdx, stepName, extracted)
+					results = append(results, matched)
+					if ev != "" {
+						evidence = append(evidence, ev)
+					}
+				}
+				continue
+			}
 			// Inject global headers into raw request
 			rawReq = injectGlobalHeaders(rawReq, e.globalHeaders)
-			rawReq = eng.ReplaceWithEscape(rawReq)
 		}
 
-		// Parse and send
-		parsed, err := httpclient.ParseRaw(rawReq)
-		if err != nil {
-			if e.logger != nil {
-				e.logger.WarnKV("workflow parse request failed",
-					"step", stepName, "req", i, "error", err.Error())
-			}
-			continue
-		}
-
-		reqTimeout := e.timeout
-		if req.Timeout > 0 {
-			reqTimeout = req.Timeout
-		}
-
-		// Log request before sending — Burp-style packet
-		resolvedURL := httpclient.ResolveURL(target, parsed)
-		if e.logger != nil {
-			e.logger.InfoKV("workflow HTTP request sent",
-				"step", stepName, "step_index", stepIdx, "req", i,
-				"url", resolvedURL, "method", parsed.Method)
-		}
-		if e.verbose >= 2 && e.onPacket != nil {
-			summary := fmt.Sprintf("workflow[%s] step[%d] req[%d]  %s %s  %d bytes",
-				stepName, stepIdx, i, parsed.Method, resolvedURL, len(rawReq))
-			e.onPacket("请求", summary, rawReq)
-		}
-
-		reqCtx, cancel := context.WithTimeout(ctx, time.Duration(reqTimeout)*time.Second)
-		resp, err := e.client.SendParsed(reqCtx, target, parsed)
-		cancel()
-		if err != nil {
-			if e.logger != nil {
-				e.logger.WarnKV("workflow HTTP request failed",
-					"step", stepName, "step_index", stepIdx, "req", i, "error", err.Error())
-			}
-			results = append(results, false)
-			continue
-		}
-
-		// Log response — Burp-style packet
-		if e.logger != nil {
-			e.logger.InfoKV("workflow HTTP response received",
-				"step", stepName, "step_index", stepIdx, "req", i,
-				"status", resp.StatusCode, "time_ms", resp.Time.Milliseconds(),
-				"bytes", len(resp.Body))
-		}
-		if e.verbose >= 2 && e.onPacket != nil {
-			summary := fmt.Sprintf("workflow[%s] step[%d] req[%d]  status=%d  %s  %d bytes",
-				stepName, stepIdx, i, resp.StatusCode,
-				resp.Time.Round(time.Millisecond), len(resp.Body))
-			e.onPacket("响应", summary, resp.Raw)
-		}
-
-		// For OOB verify steps (queries to api.ceye.io), log body regardless
-		if strings.Contains(strings.ToLower(parsed.Headers["Host"]), "ceye.io") {
-			bodyDisplay := resp.Body
-			if len(bodyDisplay) > 800 {
-				bodyDisplay = bodyDisplay[:800] + "\n... (truncated, total " + fmt.Sprintf("%d", len(resp.Body)) + " bytes)"
-			}
-			if e.logger != nil {
-				e.logger.DebugKV("ceye.io response",
-					"step", stepName, "req", i, "status", resp.StatusCode,
-					"body", bodyDisplay)
-			}
-		}
-
-		matchCtx := matcher.NewMatchContextWithCookies(
-			resp.StatusCode,
-			resp.Body,
-			resp.AllHeaders(),
-			resp.GetHeader("Set-Cookie"),
-			resp.Time,
-		)
-		// Carry forward extracted variables for DSL interpolation across steps
-		matchCtx.ExtractedVars = extracted
-
-		// Extract
-		ext := matcher.Extract(req.Extractors, matchCtx)
-		for k, v := range ext {
-			extracted[k] = v
-			eng.SetExtracted(k, v)
-		}
-
-		// Match — first substitute placeholders inside each matcher's
-		// string fields (Words/Regex/Header/JSONPath/JSONField etc.)
-		// because YAML-loaders never run them through the placeholder
-		// engine; only the raw HTTP request does.
-		matchers := substituteMatcherPlaceholders(req.Matchers, eng)
-		matched, ev := matcher.Evaluate(matchers, req.MatchersCondition, matchCtx)
-
-		// Log matcher result
-		if e.logger != nil {
-			mTypes := make([]string, 0, len(req.Matchers))
-			for _, m := range req.Matchers {
-				mTypes = append(mTypes, m.Type)
-			}
-			if matched {
-				e.logger.InfoKV("workflow matcher PASS",
-					"step", stepName, "step_index", stepIdx, "req", i,
-					"condition", req.MatchersCondition,
-					"types", strings.Join(mTypes, ","), "evidence", ev)
-			} else {
-				e.logger.InfoKV("workflow matcher FAIL",
-					"step", stepName, "step_index", stepIdx, "req", i,
-					"condition", req.MatchersCondition,
-					"types", strings.Join(mTypes, ","))
-			}
-		}
-		if e.verbose >= 2 && e.onRaw != nil {
-			status := "PASS"
-			if !matched {
-				status = "FAIL"
-			}
-			mTypes := make([]string, 0, len(req.Matchers))
-			for _, m := range req.Matchers {
-				mTypes = append(mTypes, m.Type)
-			}
-			e.onRaw("匹配", "workflow[%s] step[%d] req[%d]  %s  cond=%s  types=%s  evidence=%q",
-				stepName, stepIdx, i, status, req.MatchersCondition,
-				strings.Join(mTypes, ","), ev)
-		}
-
+		matched, ev := e.sendWorkflowRequest(ctx, req, rawReq, target, eng, stepIdx, stepName, extracted)
 		results = append(results, matched)
 		if ev != "" {
 			evidence = append(evidence, ev)
@@ -493,7 +463,7 @@ func (e *Executor) executeHTTPBlocks(ctx context.Context, blocks []types.HTTPReq
 	// template can express "each block matches AND all blocks together must match"
 	// by putting 'and' on the final block (or 'or' on the first for legacy).
 	if len(blocks) == 0 {
-		return false, "", extracted
+		return false, "", copiedExtracted
 	}
 	cond := "or"
 	for i := len(blocks) - 1; i >= 0; i-- {
@@ -524,34 +494,55 @@ func (e *Executor) executeHTTPBlocks(ctx context.Context, blocks []types.HTTPReq
 	return overall, strings.Join(evidence, "; "), extracted
 }
 
-// substituteMatcherPlaceholders runs the placeholder engine over the
-// string fields of each matcher so that templates can use placeholders
-// like {{oob_label}} inside matchers.words (the YAML-loader bypasses
-// the placeholder engine for matcher fields, only req.Raw is replaced).
-func substituteMatcherPlaceholders(matchers []types.Matcher, eng *placeholder.Engine) []types.Matcher {
-	out := make([]types.Matcher, len(matchers))
-	for i, m := range matchers {
-		out[i] = m // copy
-		// Replace each string slice that may carry placeholders.
-		out[i].Words = replaceEach(out[i].Words, eng)
-		out[i].Regex = replaceEach(out[i].Regex, eng)
-		out[i].Header = replaceEach(out[i].Header, eng)
-		out[i].Binary = replaceEach(out[i].Binary, eng)
-		out[i].JSONPath = eng.ReplaceWithEscape(out[i].JSONPath)
-		out[i].JSONField = eng.ReplaceWithEscape(out[i].JSONField)
+// evalRunIf evaluates a run-if condition for a request block.
+// It checks both the extracted map (from previous requests in the same step)
+// and the engine's extracted values (from previous steps) for variable resolution.
+func evalRunIf(expr string, extracted map[string]string, eng *placeholder.Engine) bool {
+	val := eng.Replace(expr)
+	if val == "" {
+		return false
 	}
-	return out
-}
-
-func replaceEach(in []string, eng *placeholder.Engine) []string {
-	if len(in) == 0 {
-		return in
+	// Check for unresolved placeholders
+	if strings.Contains(val, "{{") && strings.Contains(val, "}}") {
+		return false
 	}
-	out := make([]string, len(in))
-	for i, s := range in {
-		out[i] = eng.ReplaceWithEscape(s)
+	lower := strings.ToLower(strings.TrimSpace(val))
+	if lower == "false" || lower == "0" {
+		return false
 	}
-	return out
+	// If the expression looks like a DSL expression (contains ==, !=, etc.),
+	// evaluate it using the DSL engine.
+	// Note: for run-if, unknown extracted variables should resolve to ""
+	// (not their name string) so that len(missing) == 0 evaluates correctly.
+	if strings.Contains(val, "==") || strings.Contains(val, "!=") ||
+		strings.Contains(val, ">") || strings.Contains(val, "<") ||
+		strings.Contains(val, "contains") || strings.Contains(val, "regex") ||
+		strings.Contains(val, "!") {
+		// Build a match context with extracted variables from BOTH
+		// the local extracted map AND the engine's extracted values,
+		// so that variables extracted in previous workflow steps are available.
+		mergedVars := make(map[string]string, len(extracted))
+		for k, v := range extracted {
+			mergedVars[k] = v
+		}
+		// Copy engine's extracted values (they take precedence)
+		engineExtracted := eng.GetExtractedMap()
+		for k, v := range engineExtracted {
+			mergedVars[k] = v
+		}
+		ctx := &matcher.MatchContext{
+			StatusCode:     200,
+			Body:           "",
+			Header:         "",
+			ExtractedVars:  mergedVars,
+			UnknownVarMode: "empty",
+		}
+		if result, err := matcher.EvalDSL(val, ctx); err == nil {
+			return result
+		}
+		// If DSL evaluation fails, fall through to default behavior
+	}
+	return true
 }
 
 // topoSort performs a topological sort of workflow steps based on requires.

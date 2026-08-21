@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gosleek/gosleek/internal/placeholder"
 	"github.com/gosleek/gosleek/internal/ratelimit"
 )
 
@@ -659,4 +660,84 @@ func ReadAllRaw(r *bytes.Reader) (string, error) {
 		return "", err
 	}
 	return string(b), nil
+}
+
+// ParseMethodPath extracts the HTTP method and path from a raw HTTP request string.
+func ParseMethodPath(raw string) (method, path string) {
+	firstLine := strings.SplitN(raw, "\r\n", 2)[0]
+	parts := strings.SplitN(firstLine, " ", 3)
+	if len(parts) >= 2 {
+		return parts[0], parts[1]
+	}
+	return "?", "?"
+}
+
+// BuildRawFromPath constructs a raw HTTP request string from method, path, headers and body.
+func BuildRawFromPath(method, path string, headers map[string]string, body string) string {
+	return BuildRawFromPathWithBodyType(method, path, headers, body, "")
+}
+
+// BuildRawFromPathWithBodyType constructs a raw HTTP request string from method, path,
+// headers and body with body type support (form / multipart).
+func BuildRawFromPathWithBodyType(method, path string, headers map[string]string, body, bodyType string) string {
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("%s %s HTTP/1.1\r\n", method, path))
+	sb.WriteString("Host: {{Hostname}}\r\n")
+
+	if bodyType != "" && body != "" {
+		switch strings.ToLower(bodyType) {
+		case "form", "form-urlencoded":
+			for k, v := range headers {
+				sb.WriteString(fmt.Sprintf("%s: %s\r\n", k, v))
+			}
+			sb.WriteString("Content-Type: application/x-www-form-urlencoded\r\n")
+			sb.WriteString("Connection: close\r\n")
+			sb.WriteString("\r\n")
+			sb.WriteString(body)
+			return sb.String()
+		case "multipart", "multipart-form-data":
+			boundary := "----gosleekFormBoundary" + placeholder.RandTextHex(8)
+			contentType := "multipart/form-data; boundary=" + boundary
+			for k, v := range headers {
+				sb.WriteString(fmt.Sprintf("%s: %s\r\n", k, v))
+			}
+			sb.WriteString("Content-Type: " + contentType + "\r\n")
+			sb.WriteString("Connection: close\r\n")
+			sb.WriteString("\r\n")
+			sb.WriteString(BuildMultipartBody(body, boundary))
+			return sb.String()
+		}
+	}
+
+	for k, v := range headers {
+		sb.WriteString(fmt.Sprintf("%s: %s\r\n", k, v))
+	}
+	sb.WriteString("Connection: close\r\n")
+	sb.WriteString("\r\n")
+	if body != "" {
+		sb.WriteString(body)
+	}
+	return sb.String()
+}
+
+// BuildMultipartBody generates a multipart form body from key=value pairs.
+func BuildMultipartBody(body, boundary string) string {
+	var sb strings.Builder
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		idx := strings.Index(line, "=")
+		if idx < 0 {
+			continue
+		}
+		key := line[:idx]
+		value := line[idx+1:]
+		sb.WriteString("--" + boundary + "\r\n")
+		sb.WriteString(fmt.Sprintf("Content-Disposition: form-data; name=\"%s\"\r\n\r\n", key))
+		sb.WriteString(value + "\r\n")
+	}
+	sb.WriteString("--" + boundary + "--\r\n")
+	return sb.String()
 }

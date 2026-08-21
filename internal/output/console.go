@@ -190,7 +190,7 @@ func (c *Console) PrintDisclaimer() {
 		cardItem("法律风险", pterm.Red("未经授权的扫描行为可能违反相关法律法规")),
 		cardItem("免责条款", "作者不对任何滥用行为承担责任"),
 	}
-	c.printCard(pterm.LightYellow("⚠  免责声明"), pterm.LightYellow, body, 72)
+	c.printCard(pterm.LightYellow("⚠  免责声明"), pterm.LightYellow, body, 75)
 }
 
 // PrintScanConfig prints a config summary before scanning.
@@ -202,7 +202,7 @@ func (c *Console) PrintScanConfig(info ScanConfigInfo) {
 	defer c.mu.Unlock()
 	oobStatus := pterm.Red("✗ 未启用")
 	if info.OOBEnabled {
-		oobStatus = pterm.Green("✓ 已启用") + pterm.Gray("  · " + oobProviderLabel(info.OOBProvider, info.OOBDomain))
+		oobStatus = pterm.Green("✓ 已启用") + pterm.Gray("  · "+oobProviderLabel(info.OOBProvider, info.OOBDomain))
 	}
 	proxy := info.Proxy
 	if proxy == "" {
@@ -302,7 +302,7 @@ func (c *Console) PrintScanConfig(info ScanConfigInfo) {
 		lines = append(lines, "  "+pterm.LightCyan("输出文件")+""+pterm.Gray(":")+"  "+
 			info.OutputFile+pterm.Gray("  · "+info.OutputFormat))
 	}
-	c.printCard(pterm.LightCyan("▸")+"  扫描配置", pterm.LightCyan, lines, 72)
+	c.printCard(pterm.LightCyan("▸")+"  扫描配置", pterm.LightCyan, lines, 75)
 }
 
 // PrintOOBWarning warns when templates or plugins need OOB but the provider is not configured.
@@ -393,7 +393,7 @@ func (c *Console) PrintPacket(tag string, levelMin int, summary string, raw stri
 		label = " RESPONSE "
 	}
 	labelLen := len(label)
-	dashTotal := 70 - labelLen
+	dashTotal := 75 - labelLen
 	leftDash := dashTotal / 2
 	rightDash := dashTotal - leftDash
 	sep := pterm.Gray(strings.Repeat("─", leftDash)) +
@@ -409,7 +409,7 @@ func (c *Console) PrintPacket(tag string, levelMin int, summary string, raw stri
 	}
 
 	// Closing separator
-	pterm.Println(pterm.Gray(strings.Repeat("─", 70)))
+	pterm.Println(pterm.Gray(strings.Repeat("─", 75)))
 }
 
 // PrintWarning prints warnings. Always shown.
@@ -424,6 +424,7 @@ func (c *Console) PrintError(format string, args ...interface{}) {
 
 // PrintTemplatesLoaded shows template loading summary. Always shown unless silent.
 func (c *Console) PrintTemplatesLoaded(count int, dir string) {
+	pterm.Println(pterm.Gray(strings.Repeat("─", 75)))
 	c.pLine("成功", 0, "已加载 %d 个模板 (来自 %s)", count, dir)
 }
 
@@ -440,7 +441,7 @@ func (c *Console) PrintScanStart(targets, templates, plugins int) {
 	total := targets * (templates + plugins)
 	c.pLine("扫描", 0, "开始扫描: %d 个目标 × %d 个模板 = %d 个任务", targets, templates+plugins, total)
 	c.mu.Lock()
-	pterm.Println()
+	pterm.Println(pterm.Gray(strings.Repeat("─", 75)))
 	c.mu.Unlock()
 }
 
@@ -497,7 +498,7 @@ func (c *Console) PrintResult(r *types.Result) {
 	var body []string
 	body = append(body, headLine)
 	// 分隔线（60 个 ·）
-	body = append(body, "    "+pterm.Gray(strings.Repeat("·", 60)))
+	body = append(body, "    "+pterm.Gray(strings.Repeat("·", 80)))
 	body = append(body, "")
 	body = append(body, resultKV("目标", r.Target))
 	body = append(body, resultKV("模板", pterm.Cyan(r.TemplateID)))
@@ -528,7 +529,7 @@ func (c *Console) PrintResult(r *types.Result) {
 	if r.MatchedAt != "" {
 		body = append(body, resultKV("时间", pterm.Gray(r.MatchedAt)))
 	}
-	c.printCard("", sevColor, body, 70)
+	c.printCard("", sevColor, body, 90)
 }
 
 // ──────────────────────────────────────────────────────────────────────────

@@ -722,8 +722,9 @@ Detector
 
   Matches(fp, rules []FingerprintRule) bool
     └── 遍历规则，任一规则匹配即返回 true
-          ├── Title 匹配: fp.Titles 包含 rule.Title
-          └── Header 匹配: fp.Headers[key] 包含 pattern
+          ├── Title 匹配: fp.Titles 包含 rule.Title（子串，大小写不敏感）
+          ├── Body 匹配: fp.Body 包含 rule.Body（子串，大小写不敏感）
+          └── Header 匹配: fp.Headers[key] 包含 pattern（支持格式 A/B）
 ```
 
 ### 4.7 OOB 验证 (plugin/helpers.go)
@@ -861,7 +862,7 @@ pkg/types
 | internal/workflow | 9.6% | ❌ 覆盖不足 |
 | internal/engine | 0% | ❌ 无测试 |
 | internal/httpclient | 0% | ❌ 无测试 |
-| internal/fingerprint | 0% | ❌ 无测试 |
+| internal/fingerprint | 100% | ✅ 完整测试 |
 | internal/output | 0% | ❌ 无测试 |
 | internal/plugin | 0% | ❌ 无测试 |
 

@@ -6,7 +6,8 @@ import (
 
 	"github.com/gosleek/gosleek/internal/placeholder"
 	"github.com/gosleek/gosleek/pkg/types"
-)
+
+	"github.com/gosleek/gosleek/internal/httpclient")
 
 // TestEvaluateRunIf tests the evalRunIf function with various inputs
 func TestEvaluateRunIf(t *testing.T) {
@@ -135,7 +136,7 @@ func TestBuildRawFromPath(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			raw := buildRawFromPath(tt.method, tt.path, tt.headers, tt.body)
+			raw := httpclient.BuildRawFromPath(tt.method, tt.path, tt.headers, tt.body)
 			if !strings.Contains(raw, tt.wantContains) {
 				t.Errorf("buildRawFromPath did not contain expected: %q (got: %q)", tt.wantContains, raw)
 			}
@@ -207,9 +208,9 @@ func TestParseMethodPath(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			method, path := parseMethodPath(tt.raw)
+			method, path := httpclient.ParseMethodPath(tt.raw)
 			if method != tt.wantMethod || path != tt.wantPath {
-				t.Errorf("parseMethodPath(%q) = (%q, %q), want (%q, %q)",
+				t.Errorf("httpclient.ParseMethodPath(%q) = (%q, %q), want (%q, %q)",
 					tt.raw, method, path, tt.wantMethod, tt.wantPath)
 			}
 		})

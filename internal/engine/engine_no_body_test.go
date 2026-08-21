@@ -61,7 +61,7 @@ func TestGlobalHeadersWithoutBodySeparator(t *testing.T) {
 	fmt.Printf("Original raw: %q\n", rawReq)
 	fmt.Printf("Original has \r\n\r\n: %v\n", strings.Contains(rawReq, "\r\n\r\n"))
 	
-	injected := injectGlobalHeaders(rawReq, scanner.globalHeaders)
+	injected := scanner.client.InjectGlobalHeaders(rawReq)
 	fmt.Printf("Injected raw: %q\n", injected)
 	fmt.Printf("Injected has \r\n\r\n: %v\n", strings.Contains(injected, "\r\n\r\n"))
 	

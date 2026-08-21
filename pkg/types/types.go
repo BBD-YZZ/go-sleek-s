@@ -84,9 +84,12 @@ type Classification struct {
 }
 
 // FingerprintRule determines if a template should run against a target.
+// All non-empty fields within a single rule must match (AND),
+// while different rules are checked independently (OR).
 type FingerprintRule struct {
-	Title  string   `yaml:"title,omitempty"`
-	Header []string `yaml:"header,omitempty"` // [key, value-pattern]
+	Title  string   `yaml:"title,omitempty"`  // substring match against <title> tag content
+	Body   string   `yaml:"body,omitempty"`   // substring match against full response body
+	Header []string `yaml:"header,omitempty"` // [key] = key exists; [key, value-pattern] = key matches pattern
 }
 
 // HTTPRequest defines a single raw HTTP request block.

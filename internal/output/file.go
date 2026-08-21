@@ -200,18 +200,7 @@ func writeHTML(results []*types.Result, path string) error {
 		sb.WriteString("    datasets: [{\n")
 		sb.WriteString("      label: '漏洞数',\n")
 		sb.WriteString("      data: [")
-		vals := make([]string, 0, len(targetCount))
-		for _, t := range targetLabels {
-			target := strings.Trim(t, "\"")
-			for orig, cnt := range targetCount {
-				if strings.Contains(orig, target[:min(len(orig), len(target))]) {
-					vals = append(vals, fmt.Sprintf("%d", cnt))
-					break
-				}
-			}
-		}
-		// Rebuild with correct mapping
-		vals = vals[:0]
+		vals := make([]string, 0, len(targetLabels))
 		for _, label := range targetLabels {
 			label = strings.Trim(label, "\"")
 			for orig := range targetCount {

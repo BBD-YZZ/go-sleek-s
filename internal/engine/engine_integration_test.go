@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/gosleek/gosleek/internal/config"
+	"github.com/gosleek/gosleek/internal/httpclient"
+	"github.com/gosleek/gosleek/internal/matcher"
 	"github.com/gosleek/gosleek/internal/placeholder"
 	"github.com/gosleek/gosleek/pkg/types"
 )
@@ -482,7 +484,7 @@ func TestSubstituteMatcherPlaceholders(t *testing.T) {
 		{Type: "header", Header: []string{"X-{{oob_label}}"}},
 	}
 
-	out := substituteMatcherPlaceholders(matchers, eng)
+	out := matcher.SubstituterMatcherPlaceholders(matchers, eng)
 
 	if out[0].Words[0] != "gs-test123" {
 		t.Errorf("word not replaced: %q", out[0].Words[0])
@@ -559,7 +561,7 @@ func TestBuildRawFromPathWithBodyType(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			raw := buildRawFromPathWithBodyType(tt.method, tt.path, tt.headers, tt.body, tt.bodyType)
+			raw := httpclient.BuildRawFromPathWithBodyType(tt.method, tt.path, tt.headers, tt.body, tt.bodyType)
 			if !strings.Contains(raw, tt.wantMatch) {
 				t.Errorf("built request missing %q: %q", tt.wantMatch, raw)
 			}
@@ -573,7 +575,9 @@ func TestInjectGlobalHeaders2(t *testing.T) {
 	raw := "GET /test HTTP/1.1\r\nHost: example.com\r\n\r\nbody"
 	headers := map[string]string{"X-Custom": "value", "Authorization": "Bearer token"}
 
-	result := injectGlobalHeaders(raw, headers)
+	client := httpclient.New(httpclient.ClientConfig{})
+	client.SetGlobalHeaders(headers)
+	result := client.InjectGlobalHeaders(raw)
 	if !strings.Contains(result, "X-Custom: value") {
 		t.Errorf("missing X-Custom header")
 	}
@@ -615,9 +619,9 @@ func TestParseMethodPath2(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			m, p := parseMethodPath(tt.raw)
+			m, p := httpclient.ParseMethodPath(tt.raw)
 			if m != tt.wantM || p != tt.wantP {
-				t.Errorf("parseMethodPath() = (%q, %q), want (%q, %q)", m, p, tt.wantM, tt.wantP)
+				t.Errorf("httpclient.ParseMethodPath() = (%q, %q), want (%q, %q)", m, p, tt.wantM, tt.wantP)
 			}
 		})
 	}

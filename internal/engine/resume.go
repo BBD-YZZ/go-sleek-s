@@ -69,6 +69,16 @@ func (rs *ResumeState) Save() error {
 	if rs.filePath == "" {
 		return nil
 	}
+	// Deduplicate before saving to avoid redundant entries
+	seen := make(map[string]bool, len(rs.Completed))
+	deduped := rs.Completed[:0]
+	for _, c := range rs.Completed {
+		if !seen[c] {
+			seen[c] = true
+			deduped = append(deduped, c)
+		}
+	}
+	rs.Completed = deduped
 	dir := filepath.Dir(rs.filePath)
 	_ = os.MkdirAll(dir, 0755)
 	data, err := json.MarshalIndent(rs, "", "  ")

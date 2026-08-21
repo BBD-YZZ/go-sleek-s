@@ -1321,17 +1321,50 @@ fingerprints:
 
 ```yaml
 fingerprints:
-  - title: "目标标题"     # 匹配响应 <title> 标签（子串匹配）
-    header:              # 匹配响应头（格式：["Key: value-pattern"]）
+  - title: "目标标题"           # 匹配响应 <title> 标签（子串匹配，大小写不敏感）
+    body: "目标文本"            # 匹配响应体任意位置（子串匹配，大小写不敏感）
+    header:                    # 匹配响应头（支持两种格式）
+      # 格式 A：["Key: value-pattern"]  全元素独立解析
       - "Server: Apache"
       - "X-Powered-By: PHP"
+      # 格式 B：["Key"]  仅检查头是否存在
+      - "X-Application-Context"
+```
+
+**字段说明**：
+
+| 字段 | 类型 | 说明 | 示例 |
+|------|------|------|------|
+| `title` | `string` | 子串匹配 `<title>` 标签内容 | `title: "Spring Boot"` |
+| `body` | `string` | 子串匹配完整响应体 | `body: "Jenkins"` |
+| `header` | `string[]` | 响应头匹配，支持两种格式 | 见下方 |
+
+**Header 格式**：
+
+```yaml
+# 格式 A：值匹配 — ["Key", "pattern"]（仅 2 个元素时优先匹配旧格式）
+header: [Server, "nginx"]
+
+# 格式 B：存在性检查 — 单个元素
+header: [X-Application-Context]
+
+# 格式 C：值匹配 — 冒号分隔
+header:
+  - "Server: nginx"
+  - "X-Powered-By: PHP"
+
+# 格式 D：多规则混合
+header:
+  - "Server: nginx"    # 检查 Server 包含 nginx
+  - "X-Application-Context"  # 检查此 header 存在
 ```
 
 ### 11.3 匹配规则
 
 - 返回 nil → 不做指纹过滤，所有目标都检测
 - 返回非空 → 目标匹配**任一**规则才执行检测
-- 规则之间是 OR 关系，规则内的 title/header 也是 OR 关系
+- **规则之间**是 **OR** 关系（任意一条匹配即通过）
+- **规则内**是 **AND** 关系（同一规则中所有非空字段必须同时匹配）
 
 ### 11.4 使用场景
 
@@ -2558,8 +2591,9 @@ classification:                    # 可选
 
 # ============ 预过滤 ============
 fingerprints:                      # 可选
-  - title: string                  # 匹配 <title> 标签
-    header: [string, ...]          # 匹配响应头 ["Key: pattern"]
+  - title: string                  # 匹配 <title> 标签（子串）
+    body: string                   # 匹配响应体（子串）
+    header: [string, ...]          # 匹配响应头（"Key: pattern" 或 "Key"）
 
 # ============ 变量 ============
 variables:                         # 可选

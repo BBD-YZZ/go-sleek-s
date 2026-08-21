@@ -570,6 +570,59 @@ func (s *Scanner) executeHTTP(ctx context.Context, tmpl *types.Template, target 
 				}
 			}
 
+			// Range injection: iterate over values and replace placeholder FIRST
+			// (must be done before placeholder substitution so that {{key}}
+			// patterns survive the variable resolution)
+			if req.Range != nil && len(req.Range.Values) > 0 {
+				for _, val := range req.Range.Values {
+					select {
+					case <-ctx.Done():
+						return nil
+					default:
+					}
+					rangeReq := strings.ReplaceAll(req.Raw, "{{"+req.Range.Key+"}}", val)
+					if rangeReq == req.Raw {
+						// Placeholder not found, send original with placeholders resolved
+						rawReq := eng.ReplaceWithEscape(req.Raw)
+						s.sendRequest(ctx, tmpl, i, rawReq, reqTimeout, req.Redirects, allExtracted, eng, &reqResults, &reqEvidence, target, req.Extractors, req.Matchers, !req.Probe, &lastRawReq, &lastRawResp)
+						break
+					}
+					// Apply Range first, then placeholder substitution
+					rawReq := eng.ReplaceWithEscape(rangeReq)
+					if rawReq == "" {
+						continue
+					}
+
+					// Wordlist injection (multiple wordlists → cartesian product)
+					var wordlistCombinations [][]string
+					if len(req.Wordlist) > 0 {
+						wordlistCombinations = buildWordlistCombinations(s, req.Wordlist)
+					}
+					if len(wordlistCombinations) > 0 {
+						for _, combo := range wordlistCombinations {
+							select {
+							case <-ctx.Done():
+								return nil
+							default:
+							}
+							lineReq := rawReq
+							for j, wd := range req.Wordlist {
+								phKey := "{{" + wd.Key + "}}"
+								if j < len(combo) {
+									lineReq = strings.ReplaceAll(lineReq, phKey, combo[j])
+								}
+							}
+							s.sendRequest(ctx, tmpl, i, lineReq, reqTimeout, req.Redirects, allExtracted, eng, &reqResults, &reqEvidence, target, req.Extractors, req.Matchers, !req.Probe, &lastRawReq, &lastRawResp)
+						}
+						continue
+					}
+
+					// Probe requests with wordlists: extractors still run, but matcher results are ignored
+					s.sendRequest(ctx, tmpl, i, rawReq, reqTimeout, req.Redirects, allExtracted, eng, &reqResults, &reqEvidence, target, req.Extractors, req.Matchers, !req.Probe, &lastRawReq, &lastRawResp)
+				}
+				continue
+			}
+
 			rawReq := eng.ReplaceWithEscape(req.Raw)
 			if rawReq == "" {
 				if len(req.Path) > 0 {
@@ -589,7 +642,7 @@ func (s *Scanner) executeHTTP(ctx context.Context, tmpl *types.Template, target 
 					}
 					// Iterate over all paths in the list
 					for _, p := range req.Path {
-						pathReq := buildRawFromPathWithBodyType(method, p, mergedHeaders, req.Body, req.BodyType)
+						pathReq := httpclient.BuildRawFromPathWithBodyType(method, p, mergedHeaders, req.Body, req.BodyType)
 						pathReq = eng.ReplaceWithEscape(pathReq)
 						if pathReq == "" {
 							continue
@@ -654,25 +707,6 @@ func (s *Scanner) executeHTTP(ctx context.Context, tmpl *types.Template, target 
 					}
 					// Probe requests with wordlists: extractors still run, but matcher results are ignored
 					s.sendRequest(ctx, tmpl, i, lineReq, reqTimeout, req.Redirects, allExtracted, eng, &reqResults, &reqEvidence, target, req.Extractors, req.Matchers, !req.Probe, &lastRawReq, &lastRawResp)
-				}
-				continue
-			}
-
-			// Range injection: iterate over values and replace placeholder
-			if req.Range != nil && len(req.Range.Values) > 0 {
-				for _, val := range req.Range.Values {
-					select {
-					case <-ctx.Done():
-						return nil
-					default:
-					}
-					rangeReq := strings.ReplaceAll(rawReq, "{{"+req.Range.Key+"}}", val)
-					if rangeReq == rawReq {
-						// Placeholder not found, send original
-						s.sendRequest(ctx, tmpl, i, rawReq, reqTimeout, req.Redirects, allExtracted, eng, &reqResults, &reqEvidence, target, req.Extractors, req.Matchers, !req.Probe, &lastRawReq, &lastRawResp)
-						break
-					}
-					s.sendRequest(ctx, tmpl, i, rangeReq, reqTimeout, req.Redirects, allExtracted, eng, &reqResults, &reqEvidence, target, req.Extractors, req.Matchers, !req.Probe, &lastRawReq, &lastRawResp)
 				}
 				continue
 			}
@@ -781,7 +815,7 @@ func (s *Scanner) sendRequest(ctx context.Context, tmpl *types.Template, reqIdx 
 	if len(finalMatchers) == 0 {
 		finalMatchers = tmpl.Matchers
 	}
-	finalMatchers = substituteMatcherPlaceholders(finalMatchers, eng)
+	finalMatchers = matcher.SubstituterMatcherPlaceholders(finalMatchers, eng)
 	matched, ev := matcher.Evaluate(finalMatchers, "", matchCtx)
 	s.logMatcherResult(tmpl.ID, reqIdx, finalMatchers, "", matched, ev)
 
@@ -892,47 +926,6 @@ func encodeLine(line, encoding string) string {
 	}
 }
 
-// injectGlobalHeaders inserts global CLI headers into a raw HTTP request string.
-// It inserts missing headers BEFORE the blank line that separates headers from body,
-// so that ParseRaw correctly parses them as HTTP headers rather than body content.
-// If no \r\n\r\n separator exists, headers are appended at the end of the string.
-func injectGlobalHeaders(raw string, headers map[string]string) string {
-	if len(headers) == 0 {
-		return raw
-	}
-	// Find the header/body separator: \r\n\r\n (or \n\n as fallback).
-	sep := "\r\n\r\n"
-	idx := strings.Index(raw, sep)
-	if idx < 0 {
-		idx = strings.Index(raw, "\n\n")
-	}
-	if idx >= 0 {
-		// Insert BEFORE the blank line so new headers appear in the header block.
-		// raw[:idx] ends just before \r\n\r\n, so we add \r\n to close the last header.
-		var sb strings.Builder
-		sb.WriteString(raw[:idx])
-		sb.WriteString("\r\n")
-		for k, v := range headers {
-			sb.WriteString(fmt.Sprintf("%s: %s\r\n", k, v))
-		}
-		sb.WriteString(raw[idx:])
-		return sb.String()
-	}
-	// No separator found — append headers at the end.
-	// Remove trailing \r\n to avoid creating a false blank line.
-	raw = strings.TrimRight(raw, "\r\n")
-	return raw + "\r\n" + injectHeadersMap(headers)
-}
-
-// injectHeadersMap formats a headers map into HTTP header lines.
-func injectHeadersMap(headers map[string]string) string {
-	var sb strings.Builder
-	for k, v := range headers {
-		sb.WriteString(fmt.Sprintf("%s: %s\r\n", k, v))
-	}
-	return sb.String()
-}
-
 func (s *Scanner) executeWorkflow(ctx context.Context, tmpl *types.Template, target string, eng *placeholder.Engine) *types.Result {
 	wfExec := workflow.New(s.client, s.cfg.DefaultTimeout, s.verbose, s.debug, s.verbosef, s.onRaw, s.onPacket, s.logger, s.globalHeaders, s.cfg.OOB.Provider)
 	matched, evidence, extracted := wfExec.Execute(ctx, tmpl.Workflow, target, eng)
@@ -1000,21 +993,11 @@ func (s *Scanner) verbosef(format string, args ...interface{}) {
 	}
 }
 
-// parseMethodPath extracts the HTTP method and path from a raw request string.
-func parseMethodPath(raw string) (method, path string) {
-	firstLine := strings.SplitN(raw, "\r\n", 2)[0]
-	parts := strings.SplitN(firstLine, " ", 3)
-	if len(parts) >= 2 {
-		return parts[0], parts[1]
-	}
-	return "?", "?"
-}
-
 // logRequest logs an outgoing HTTP request.
 // INFO level (-v): method + path summary via structured logger.
 // -vv level: Burp-style packet dump via onPacket callback.
 func (s *Scanner) logRequest(tmplID string, i int, raw string) {
-	method, path := parseMethodPath(raw)
+	method, path := httpclient.ParseMethodPath(raw)
 
 	// INFO: request summary (visible at -v)
 	if s.logger != nil {
@@ -1086,35 +1069,6 @@ func (s *Scanner) logMatcherResult(tmplID string, i int, ms []types.Matcher, con
 // =============================================================================
 // helpers
 // =============================================================================
-
-// substituteMatcherPlaceholders runs the placeholder engine over the string
-// fields of each matcher. YAML-loaded matcher fields bypass the placeholder
-// engine — only req.Raw goes through it. This helper closes that gap so
-// templates can write things like `words: ["{{oob_label}}"]`.
-func substituteMatcherPlaceholders(matchers []types.Matcher, eng *placeholder.Engine) []types.Matcher {
-	out := make([]types.Matcher, len(matchers))
-	for i, m := range matchers {
-		out[i] = m // copy
-		out[i].Words = replaceStrSlice(out[i].Words, eng)
-		out[i].Regex = replaceStrSlice(out[i].Regex, eng)
-		out[i].Header = replaceStrSlice(out[i].Header, eng)
-		out[i].Binary = replaceStrSlice(out[i].Binary, eng)
-		out[i].JSONPath = eng.ReplaceWithEscape(out[i].JSONPath)
-		out[i].JSONField = eng.ReplaceWithEscape(out[i].JSONField)
-	}
-	return out
-}
-
-func replaceStrSlice(in []string, eng *placeholder.Engine) []string {
-	if len(in) == 0 {
-		return in
-	}
-	out := make([]string, len(in))
-	for i, s := range in {
-		out[i] = eng.ReplaceWithEscape(s)
-	}
-	return out
-}
 
 // TemplateNeedsOOB reports whether a template references OOB placeholders.
 // Exported so cmd/gosleek can reuse this logic instead of duplicating it.

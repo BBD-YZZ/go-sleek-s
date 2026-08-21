@@ -351,32 +351,59 @@ func (p *dslParser) readArg() string {
 	}
 	c := p.input[p.pos]
 	if c == '\'' || c == '"' {
-		quote := c
-		p.pos++
-		// [批次A-4 修复点] 支持反斜杠转义: \' → ', \" → ", \\ → \
-		// 旧实现在遇到引号时直接截断, 无法在字符串中包含引号。
-		var sb strings.Builder
-		for p.pos < len(p.input) {
-			ch := p.input[p.pos]
-			if ch == '\\' && p.pos+1 < len(p.input) {
-				next := p.input[p.pos+1]
-				if next == quote || next == '\\' {
-					sb.WriteByte(next)
-					p.pos += 2
-					continue
-				}
-			}
-			if ch == quote {
-				p.pos++
-				break
-			}
-			sb.WriteByte(ch)
-			p.pos++
-		}
-		return sb.String()
+		return p.readQuoted(c)
 	}
 	// Variable name
 	return p.readIdent()
+}
+
+func (p *dslParser) readValue() string {
+	p.skipWS()
+	if p.pos >= len(p.input) {
+		return ""
+	}
+	c := p.input[p.pos]
+	if c == '\'' || c == '"' {
+		return p.readQuoted(c)
+	}
+	// Number or identifier
+	start := p.pos
+	for p.pos < len(p.input) {
+		c := p.input[p.pos]
+		if (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '_' ||
+			(c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') {
+			p.pos++
+		} else {
+			break
+		}
+	}
+	return p.input[start:p.pos]
+}
+
+// readQuoted parses a quoted string (single or double quotes) with backslash
+// escape support (\' → ', \" → ", \\ → \).
+// [批次A-4 修复点] 旧实现在遇到引号时直接截断, 无法在字符串中包含引号。
+func (p *dslParser) readQuoted(quote byte) string {
+	p.pos++ // consume opening quote
+	var sb strings.Builder
+	for p.pos < len(p.input) {
+		ch := p.input[p.pos]
+		if ch == '\\' && p.pos+1 < len(p.input) {
+			next := p.input[p.pos+1]
+			if next == quote || next == '\\' {
+				sb.WriteByte(next)
+				p.pos += 2
+				continue
+			}
+		}
+		if ch == quote {
+			p.pos++
+			break
+		}
+		sb.WriteByte(ch)
+		p.pos++
+	}
+	return sb.String()
 }
 
 func (p *dslParser) parseComparison(varName string, ctx *MatchContext) (bool, error) {
@@ -425,49 +452,6 @@ func (p *dslParser) readOperator() string {
 	return ""
 }
 
-func (p *dslParser) readValue() string {
-	p.skipWS()
-	if p.pos >= len(p.input) {
-		return ""
-	}
-	c := p.input[p.pos]
-	if c == '\'' || c == '"' {
-		quote := c
-		p.pos++
-		// [批次A-4 修复点] 与 readArg 保持一致, 支持转义引号
-		var sb strings.Builder
-		for p.pos < len(p.input) {
-			ch := p.input[p.pos]
-			if ch == '\\' && p.pos+1 < len(p.input) {
-				next := p.input[p.pos+1]
-				if next == quote || next == '\\' {
-					sb.WriteByte(next)
-					p.pos += 2
-					continue
-				}
-			}
-			if ch == quote {
-				p.pos++
-				break
-			}
-			sb.WriteByte(ch)
-			p.pos++
-		}
-		return sb.String()
-	}
-	// Number or identifier
-	start := p.pos
-	for p.pos < len(p.input) {
-		c := p.input[p.pos]
-		if (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '_' ||
-			(c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') {
-			p.pos++
-		} else {
-			break
-		}
-	}
-	return p.input[start:p.pos]
-}
 
 func resolveVar(name string, ctx *MatchContext) string {
 	switch name {
@@ -489,6 +473,11 @@ func resolveVar(name string, ctx *MatchContext) string {
 			if v, ok := ctx.ExtractedVars[name]; ok {
 				return v
 			}
+		}
+		// [批次B-4 修复点] run-if 需要未知变量返回空串，否则
+		// len(missing_var) > 0 会被错误地评估为 true（因为返回 name 字符串）。
+		if ctx.UnknownVarMode == "empty" {
+			return ""
 		}
 		// [P1 修复] 未知变量不再静默返回自身。当 Debug 回调可用时输出警告，
 		// 帮助用户发现拼写错误（如 stat_code 应为 status_code）。

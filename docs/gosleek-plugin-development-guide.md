@@ -302,12 +302,13 @@ func (p *MyPlugin) Fingerprints() []types.FingerprintRule {
 **FingerprintRule 字段**：
 ```go
 type FingerprintRule struct {
-    Title  string   // 匹配响应 <title> 标签
-    Header []string // 匹配响应头（格式：["Key: value-pattern"]）
+    Title  string   // 匹配响应 <title> 标签（子串，大小写不敏感）
+    Body   string   // 匹配响应体（子串，大小写不敏感）
+    Header []string // 匹配响应头：["Key: pattern"] 或 ["Key"]
 }
 ```
 
-**规则**：返回 nil 表示不做指纹过滤；非空时，目标匹配**任一**规则才执行 Verify。
+**规则**：返回 nil 表示不做指纹过滤；非空时，目标匹配**任一**规则才执行 Verify。规则内字段为 AND 关系，规则间为 OR 关系。
 
 ### 6.3 NeedsOOB()
 

@@ -184,6 +184,17 @@ func (e *Engine) GetExtracted(name string) string {
 	return e.extracted[name]
 }
 
+// GetExtractedMap returns a copy of all extracted variables.
+func (e *Engine) GetExtractedMap() map[string]string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	out := make(map[string]string, len(e.extracted))
+	for k, v := range e.extracted {
+		out[k] = v
+	}
+	return out
+}
+
 // Replace substitutes all placeholders in the given string.
 func (e *Engine) Replace(s string) string {
 	// Handle $$ escape: temporarily replace $$ with placeholder
