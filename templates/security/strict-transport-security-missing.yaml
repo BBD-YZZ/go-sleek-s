@@ -1,0 +1,20 @@
+id: strict-transport-security-missing
+name: HSTS 安全头缺失
+severity: info
+author: gosleek
+description: |
+  检测 HTTPS 站点是否配置了 Strict-Transport-Security 头。
+  缺失 HSTS 可能导致 SSL 剥离攻击。
+tags:
+  - security
+  - hsts
+  - https
+
+http:
+  - method: GET
+    path:
+      - "/"
+    matchers:
+      - type: dsl
+        dsl:
+          - "!contains(header, 'Strict-Transport-Security')"

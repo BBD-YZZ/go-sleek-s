@@ -1,0 +1,110 @@
+id: advanced-api-enumeration
+name: "Advanced API Endpoint Enumeration"
+severity: "info"
+tags: [info, discovery, api]
+description: |
+  综合演示：range + DSL
+  这是一个完整的 API 端点枚举模板。
+
+variables:
+  api_base: "/api/v1"
+
+http:
+  # 枚举常见端点（使用 range 循环）
+  - raw: |
+      GET {{api_base}}/{{endpoint}} HTTP/1.1
+      Host: {{Hostname}}
+    range:
+      key: "endpoint"
+      values:
+        - "users"
+        - "user"
+        - "users/1"
+        - "users/1/profile"
+        - "admins"
+        - "admin"
+        - "admin/users"
+        - "admin/settings"
+        - "settings"
+        - "config"
+        - "environment"
+        - "env"
+        - "debug"
+        - "health"
+        - "status"
+        - "version"
+        - "metrics"
+        - "trace"
+        - "swagger"
+        - "api-docs"
+        - "graphql"
+        - "graphiql"
+        - "playground"
+        - "favicon.ico"
+        - "robots.txt"
+        - ".env"
+        - "wp-admin"
+        - "wp-login.php"
+        - "admin.php"
+        - "phpmyadmin"
+        - "phpinfo.php"
+    matchers:
+      - type: dsl
+        dsl:
+          - "status_code != 404"
+          - "status_code != 403"
+    extractors:
+      - name: "endpoint_type"
+        type: "regex"
+        part: "header"
+        regex: ['X-Endpoint-Type:\s*(\w+)']
+      - name: "content_type"
+        type: "regex"
+        part: "header"
+        regex: ['Content-Type:\s*([^\r\n]+)']
+
+  # 深度探测（使用 range 循环测试不同操作）
+  - raw: |
+      GET {{api_base}}/users/{{action}} HTTP/1.1
+      Host: {{Hostname}}
+    range:
+      key: "action"
+      values:
+        - "list"
+        - "create"
+        - "update"
+        - "delete"
+        - "get"
+        - "search"
+        - "export"
+        - "import"
+    matchers:
+      - type: dsl
+        dsl:
+          - "status_code != 404"
+          - "status_code != 405"
+    extractors:
+      - name: "method_allowed"
+        type: "regex"
+        part: "header"
+        regex: ['Allow:\s*(\w+,?\s*)+']
+
+  # 测试 HTTP 方法绕过
+  - raw: |
+      {{method}} {{api_base}}/admin HTTP/1.1
+      Host: {{Hostname}}
+    range:
+      key: "method"
+      values:
+        - "GET"
+        - "POST"
+        - "PUT"
+        - "DELETE"
+        - "PATCH"
+        - "OPTIONS"
+        - "HEAD"
+    matchers:
+      - type: dsl
+        dsl:
+          - "status_code != 404"
+          - "status_code != 405"

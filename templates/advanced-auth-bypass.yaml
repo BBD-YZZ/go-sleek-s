@@ -1,0 +1,93 @@
+id: advanced-auth-bypass
+name: "Advanced Authentication Bypass"
+severity: "critical"
+tags: [auth, bypass, advanced]
+description: |
+  综合演示：workflow + XPath + DSL + range
+  这是一个完整的认证绕过检测模板，使用workflow确保顺序执行。
+
+workflow:
+  # 步骤1：提取认证 token（使用 XPath 提取）
+  - name: "extract-token"
+    http:
+      - raw: |
+          GET /api/login HTTP/1.1
+          Host: {{Hostname}}
+        extractors:
+          - name: "csrf_token"
+            type: "xpath"
+            xpath: ['//input[@name="csrf_token"]/@value']
+          - name: "auth_hint"
+            type: "xpath"
+            xpath: ['//div[@class="auth-hint"]/text()']
+        matchers:
+          - type: status
+            status: [200]
+
+  # 步骤2：测试常见绕过方式（使用 range 循环）
+  # 使用 requires 确保步骤1完成后再执行
+  - name: "test-bypass"
+    requires: ["extract-token"]
+    http:
+      - raw: |
+          GET /api/admin HTTP/1.1
+          Host: {{Hostname}}
+          X-Forwarded-For: {{bypass_method}}
+        range:
+          key: "bypass_method"
+          values:
+            - "127.0.0.1"
+            - "0.0.0.0"
+            - "localhost"
+            - "{{Hostname}}"
+            - "169.254.169.254"
+        matchers:
+          - type: dsl
+            dsl:
+              - "status_code == 200"
+              - "contains(body, 'admin')"
+              - "contains(body, 'dashboard')"
+
+  # 步骤3：测试弱认证（使用 range 循环）
+  - name: "test-weak-auth"
+    requires: ["extract-token"]
+    http:
+      - raw: |
+          POST /api/login HTTP/1.1
+          Host: {{Hostname}}
+          Content-Type: application/json
+
+          {"username": "{{username}}", "password": "{{password}}"}
+        range:
+          key: "username"
+          values:
+            - "admin"
+            - "administrator"
+            - "root"
+            - "test"
+            - "user"
+        matchers:
+          - type: status
+            status: [200]
+        extractors:
+          - name: "jwt_token"
+            type: "json"
+            json: ["token"]
+          - name: "session_id"
+            type: "cookie"
+
+  # 步骤4：验证认证绕过（仅当获取到 token 时执行）
+  - name: "verify-bypass"
+    requires: ["test-weak-auth"]
+    http:
+      - raw: |
+          GET /api/admin/dashboard HTTP/1.1
+          Host: {{Hostname}}
+          Authorization: Bearer {{jwt_token}}
+        run-if: "len(jwt_token) > 0"
+        matchers:
+          - type: dsl
+            dsl:
+              - "status_code == 200"
+              - "contains(body, 'admin')"
+              - "contains(body, 'dashboard')"

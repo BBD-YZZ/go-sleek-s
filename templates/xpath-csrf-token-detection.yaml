@@ -1,0 +1,48 @@
+id: xpath-csrf-token-detection
+name: "XPath CSRF Token Detection"
+severity: "medium"
+tags: [csrf, xpath, token]
+description: |
+  使用 XPath 提取 CSRF token 并验证其存在性。
+  使用 workflow 确保顺序执行。
+
+workflow:
+  # 步骤1：提取 CSRF token
+  - name: "extract-token"
+    http:
+      - raw: |
+          GET /api/form HTTP/1.1
+          Host: {{Hostname}}
+        extractors:
+          - name: "csrf_token"
+            type: "xpath"
+            xpath: ['//input[@name="csrf_token"]/@value']
+          - name: "csrf_meta"
+            type: "xpath"
+            xpath: ['//meta[@name="csrf-token"]/@content']
+          - name: "form_action"
+            type: "xpath"
+            xpath: ['//form/@action']
+        matchers:
+          - type: status
+            status: [200]
+
+  # 步骤2：使用提取的 token 提交表单
+  - name: "submit-with-token"
+    requires: ["extract-token"]
+    http:
+      - raw: |
+          POST /api/submit HTTP/1.1
+          Host: {{Hostname}}
+          Content-Type: application/x-www-form-urlencoded
+
+          csrf_token={{csrf_token}}&data=test
+        run-if: "len(csrf_token) > 0"
+        matchers:
+          - type: status
+            status: [200, 201, 302]
+        extractors:
+          - name: "redirect_url"
+            type: "regex"
+            part: "header"
+            regex: ['Location:\s*(\S+)']

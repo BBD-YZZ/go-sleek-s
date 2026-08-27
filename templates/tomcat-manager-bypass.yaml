@@ -1,0 +1,72 @@
+# Tomcat Manager 弱口令检测
+#
+# 使用笛卡尔积爆破检测 Tomcat Manager 弱口令
+# username 来自 wordlists/tomcat-users.txt
+# password 来自 wordlists/tomcat-pass.txt
+id: tomcat-manager-bypass
+name: Apache Tomcat Manager 弱口令检测
+description: |
+  检测 Apache Tomcat Manager Web Application 的弱口令漏洞。
+  使用 wordlist 字典进行认证爆破，成功登录即表示存在弱口令风险。
+severity: critical
+author: gosleek
+tags: [tomcat, rce, auth-bypass, default-password, cve]
+reference:
+  - https://tomcat.apache.org/security-9.html
+  - https://tomcat.apache.org/tomcat-9.0-doc/manager-howto.html
+  - https://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2007-0402
+
+http:
+  # 阶段1: 探测 Tomcat Manager 是否存在 (probe请求，只提取信息，不参与最终判定)
+  - name: probe-manager
+    probe: true
+    method: GET
+    path:
+      - /manager/html
+      - /manager/text
+    headers:
+      User-Agent: Mozilla/5.0 (Windows NT 10.0; rv:109.0) Gecko/20100101 Firefox/115.0
+    matchers-condition: or
+    matchers:
+      - type: status
+        status: [200, 401, 403]
+      - type: word
+        part: body
+        words: ["Tomcat Manager Application", "manager app", "Applications Manager", "401 Unauthorized"]
+        condition: or
+        case-insensitive: true
+    extractors:
+      - name: manager-found
+        type: word
+        part: body
+        words: ["Tomcat Manager", "manager app", "401 Unauthorized"]
+        case-insensitive: true
+
+  # 阶段2: 弱口令爆破（笛卡尔积: user × password）
+  - name: brute-login
+    run-if: "{{manager-found}}"
+    method: GET
+    path: [/manager/html]
+    headers:
+      User-Agent: Mozilla/5.0 (Windows NT 10.0; rv:109.0) Gecko/20100101 Firefox/115.0
+      Authorization: Basic {{base64(username + ":" + password)}}
+    wordlist:
+      - key: username
+        path: wordlists/tomcat-users.txt
+      - key: password
+        path: wordlists/tomcat-pass.txt
+    matchers-condition: and
+    matchers:
+      - type: status
+        status: [200]
+      - type: word
+        part: body
+        words: ["Tomcat Manager Application", "Applications Manager", "deploy", "undeploy"]
+        condition: or
+        case-insensitive: true
+    extractors:
+      - name: valid-cred
+        type: regex
+        part: header
+        regex: ['"Set-Cookie":\s*"JSESSIONID=([^"]+)"']
+        group: 1

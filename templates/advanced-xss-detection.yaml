@@ -1,0 +1,64 @@
+id: advanced-xss-detection
+name: "Advanced XSS Detection"
+severity: "high"
+tags: [xss, injection, advanced]
+description: |
+  综合演示：range + CSS 提取器
+  这是一个完整的 XSS 检测模板。
+
+variables:
+  xss_payload_script: "<script>alert(1)</script>"
+  xss_payload_img: "<img src=x onerror=alert(1)>"
+  xss_payload_svg: "<svg onload=alert(1)>"
+
+http:
+  # 探测反射型 XSS（使用 range 循环测试多个参数名）
+  - raw: |
+      GET /search?{{param}}={{xss_payload_script}} HTTP/1.1
+      Host: {{Hostname}}
+    range:
+      key: "param"
+      values:
+        - "q"
+        - "search"
+        - "keyword"
+        - "query"
+        - "name"
+        - "username"
+        - "email"
+        - "comment"
+    extractors:
+      - name: "reflected_script"
+        type: "css"
+        css: ["script"]
+    matchers:
+      - type: dsl
+        dsl:
+          - "contains(body, '<script>alert(1)</script>')"
+          - "contains(body, 'onerror=alert(1)')"
+      - type: status
+        status: [200]
+
+  # 测试存储型 XSS
+  - raw: |
+      POST /api/comment HTTP/1.1
+      Host: {{Hostname}}
+      Content-Type: application/json
+
+      {"content": "{{xss_payload_img}}", "author": "test"}
+    matchers:
+      - type: status
+        status: [200, 201]
+
+  # 验证存储型 XSS
+  - raw: |
+      GET /api/comment/1 HTTP/1.1
+      Host: {{Hostname}}
+    matchers:
+      - type: dsl
+        dsl:
+          - "contains(body, 'onerror')"
+          - "contains(body, 'onload')"
+          - "contains(body, 'script')"
+      - type: status
+        status: [200]

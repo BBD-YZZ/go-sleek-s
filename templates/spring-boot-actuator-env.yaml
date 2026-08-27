@@ -1,0 +1,42 @@
+# Spring Boot Actuator Env Exposure
+id: spring-boot-actuator-env-exposure
+name: Spring Boot Actuator Environment Exposure
+description: |
+  Spring Boot Actuator env endpoint exposes sensitive environment variables
+  including database credentials, API keys, and internal configuration.
+severity: high
+author: gosleek
+tags: [springboot, exposure, config, actuator]
+reference:
+  - https://docs.spring.io/spring-boot/docs/current/reference/html/actuator.html
+
+http:
+  - raw: |+
+      GET /actuator/env HTTP/1.1
+      Host: {{Hostname}}
+      User-Agent: Mozilla/5.0
+      Accept: */*
+      Connection: close
+
+    timeout: 10
+    redirects: false
+
+    matchers-condition: and
+    matchers:
+      - type: status
+        status: [200]
+      - type: word
+        part: body
+        words: ["propertySources", "applicationConfig"]
+        condition: and
+      - type: word
+        part: header
+        words: ["application/vnd.spring-boot.actuator.v3+json", "application/json"]
+        condition: or
+
+    extractors:
+      - name: env-config
+        type: regex
+        part: body
+        group: 0
+        regex: ["\"applicationConfig\".*?"]

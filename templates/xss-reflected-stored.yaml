@@ -1,0 +1,54 @@
+id: xss-reflected-stored
+name: "Reflected & Stored XSS Detection"
+severity: "high"
+tags: [xss, injection, reflected, stored]
+description: |
+  检测反射型和存储型 XSS 漏洞。
+  使用 range 循环测试多个参数，CSS 提取器验证回显。
+
+variables:
+  # 变量延迟解析：定义 XSS 载荷
+  xss_payload: "<script>alert(1)</script>"
+  xss_payload_img: "<img src=x onerror=alert(1)>"
+  xss_payload_svg: "<svg onload=alert(1)>"
+
+http:
+  # 第一个请求：遍历多个参数名
+  - raw: |
+      GET /search?{{param}}={{xss_payload}} HTTP/1.1
+      Host: {{Hostname}}
+    range:
+      key: "param"
+      values:
+        - "q"
+        - "search"
+        - "keyword"
+        - "query"
+        - "name"
+        - "username"
+        - "email"
+        - "comment"
+        - "message"
+        - "text"
+    extractors:
+      - name: "reflected_payload"
+        type: "css"
+        css: ["body"]
+    matchers:
+      - type: dsl
+        dsl:
+          - "contains(body, '<script>alert(1)</script>')"
+          - "contains(body, 'onerror=alert(1)')"
+          - "contains(body, 'onload=alert(1)')"
+
+  - raw: |
+      GET /profile?name={{xss_payload}} HTTP/1.1
+      Host: {{Hostname}}
+    matchers:
+      - type: word
+        words:
+          - "<script>alert(1)</script>"
+          - "onerror=alert"
+          - "onload=alert"
+      - type: status
+        status: [200]

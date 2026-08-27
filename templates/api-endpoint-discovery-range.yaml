@@ -1,0 +1,46 @@
+id: api-endpoint-discovery-range
+name: "API Endpoint Discovery with Range"
+severity: "info"
+tags: [info, discovery, api]
+description: |
+  使用 range 循环枚举 API 端点。
+  展示 range 与 matchers 结合的高级用法。
+
+http:
+  - raw: |
+      GET /api/v1/{{endpoint}} HTTP/1.1
+      Host: {{Hostname}}
+    range:
+      key: "endpoint"
+      values:
+        - "users"
+        - "user"
+        - "users/1"
+        - "users/1/profile"
+        - "admins"
+        - "admin"
+        - "admin/users"
+        - "settings"
+        - "config"
+        - "environment"
+        - "env"
+        - "debug"
+        - "health"
+        - "status"
+        - "version"
+        - "metrics"
+        - "trace"
+        - "swagger"
+        - "api-docs"
+        - "graphql"
+        - "graphiql"
+    matchers:
+      - type: dsl
+        dsl:
+          - "status_code != 404"
+          - "status_code != 403"
+    extractors:
+      - name: "endpoint_status"
+        type: "regex"
+        part: "header"
+        regex: ['X-Endpoint-Status:\s*(\w+)']

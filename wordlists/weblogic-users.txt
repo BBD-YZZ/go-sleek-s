@@ -1,0 +1,16 @@
+# WebLogic 常见用户名
+# 来源：Oracle 官方默认配置、CVE 漏洞利用、安全研究
+
+weblogic
+admin
+system
+console
+administrator
+guest
+test
+root
+user
+manager
+deploy
+autodeploy
+services

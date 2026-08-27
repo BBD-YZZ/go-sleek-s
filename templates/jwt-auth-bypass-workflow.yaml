@@ -1,0 +1,70 @@
+# Multi-step Workflow: JWT Auth Bypass
+# This template demonstrates workflow with multiple steps and dependencies
+id: jwt-auth-bypass-workflow
+name: JWT Authentication Bypass (Workflow)
+description: |
+  Multi-step workflow: 1) Obtain a valid JWT token by logging in
+  2) Use the token to access a protected endpoint
+  3) Check if the endpoint is accessible without proper role
+severity: high
+author: gosleek
+tags: [jwt, auth, bypass, workflow]
+
+variables:
+  test-user: "admin"
+  test-pass: "admin123"
+
+workflow:
+  - name: step1-login
+    http:
+      - raw: |+
+          POST /api/login HTTP/1.1
+          Host: {{Hostname}}
+          Content-Type: application/json
+          User-Agent: Mozilla/5.0
+          Connection: close
+
+          {"username":"{{test-user}}","password":"{{test-pass}}"}
+
+        timeout: 10
+        matchers:
+          - type: status
+            status: [200]
+          - type: word
+            part: body
+            words: ["token", "access_token"]
+            condition: or
+
+        extractors:
+          - name: jwt-token
+            type: regex
+            part: body
+            group: 1
+            regex: ['"token":\s*"([^"]+)"']
+
+  - name: step2-access-protected
+    requires: [step1-login]
+    http:
+      - raw: |+
+          GET /api/admin/users HTTP/1.1
+          Host: {{Hostname}}
+          Authorization: Bearer {{jwt-token}}
+          User-Agent: Mozilla/5.0
+          Accept: */*
+          Connection: close
+
+        timeout: 10
+        matchers-condition: and
+        matchers:
+          - type: status
+            status: [200]
+          - type: word
+            part: body
+            words: ["users", "admin", "list"]
+            condition: or
+        extractors:
+          - name: admin-data
+            type: regex
+            part: body
+            group: 0
+            regex: [".*"]

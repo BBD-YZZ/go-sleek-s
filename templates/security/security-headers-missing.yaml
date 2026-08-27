@@ -1,0 +1,23 @@
+id: security-headers-missing
+name: 缺失关键安全响应头
+severity: info
+author: gosleek
+description: |
+  检测目标是否缺失关键的安全响应头。
+  缺失这些头可能导致 XSS、点击劫持、MIME 嗅探等风险。
+  参考: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers
+tags:
+  - security
+  - headers
+  - best-practice
+
+http:
+  - method: GET
+    path:
+      - "/"
+    matchers:
+      - type: dsl
+        dsl:
+          - "!contains(header, 'X-Content-Type-Options')"
+          - "!contains(header, 'X-Frame-Options')"
+          - "!contains(header, 'Content-Security-Policy')"

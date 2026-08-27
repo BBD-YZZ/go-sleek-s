@@ -1,0 +1,22 @@
+id: open-redirect
+name: 开放重定向检测
+severity: medium
+author: gosleek
+description: |
+  检测目标是否存在开放重定向漏洞。
+  通过构造 redirect 参数测试是否允许跳转到外部域名。
+tags:
+  - security
+  - redirect
+  - ossrf
+
+http:
+  - method: GET
+    path:
+      - "/redirect?url=https://evil.example.com"
+      - "/goto?next=https://evil.example.com"
+      - "/out?url=https://evil.example.com"
+    matchers:
+      - type: dsl
+        dsl:
+          - "contains(header, 'Location') && contains(header, 'evil.example.com')"

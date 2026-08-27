@@ -1,0 +1,47 @@
+id: csrf-token-missing
+name: "CSRF Token Missing Detection"
+severity: "medium"
+tags: [csrf, auth, token]
+description: |
+  检测 CSRF 防护缺失的漏洞。
+  使用 workflow 确保顺序执行。
+
+workflow:
+  # 步骤1：提取 CSRF token
+  - name: "extract-token"
+    http:
+      - raw: |
+          GET /api/settings HTTP/1.1
+          Host: {{Hostname}}
+        extractors:
+          - name: "csrf_token"
+            type: "xpath"
+            xpath: ['//input[@name="csrf_token"]/@value']
+          - name: "csrf_meta"
+            type: "xpath"
+            xpath: ['//meta[@name="csrf-token"]/@content']
+          - name: "page_title"
+            type: "xpath"
+            xpath: ['//title/text()']
+        matchers:
+          - type: status
+            status: [200]
+
+  # 步骤2：尝试提交没有 CSRF token 的请求
+  - name: "test-no-token"
+    requires: ["extract-token"]
+    http:
+      - raw: |
+          POST /api/settings HTTP/1.1
+          Host: {{Hostname}}
+          Content-Type: application/json
+
+          {"setting": "test"}
+        run-if: "len(csrf_token) == 0"
+        matchers:
+          - type: status
+            status: [200, 201, 204]
+        extractors:
+          - name: "success_msg"
+            type: "xpath"
+            xpath: ['//body//*/text()[contains(., "success") or contains(., "updated")]']

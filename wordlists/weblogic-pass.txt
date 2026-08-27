@@ -1,0 +1,22 @@
+# WebLogic 常见弱口令
+# 来源：Oracle 官方默认密码、CVE 漏洞利用、安全研究
+
+weblogic
+admin
+admin123
+password
+changeme
+123456
+letmein
+welcome1
+manager
+deploy
+test
+guest
+root
+secret
+Password1
+Oracle123
+weblogic1
+console
+system
