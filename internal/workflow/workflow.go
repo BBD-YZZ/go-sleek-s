@@ -12,28 +12,6 @@ import (
 	"github.com/gosleek/gosleek/pkg/types"
 )
 
-// LoggerIface for structured logging inside workflow execution.
-type LoggerIface interface {
-	DebugKV(msg string, args ...interface{})
-	InfoKV(msg string, args ...interface{})
-	WarnKV(msg string, args ...interface{})
-}
-
-// isOOBRequest detects whether a parsed HTTP request is directed to an OOB provider.
-// Returns (isOOB bool, provider string, oobInfo string).
-func isOOBRequest(rawReq *httpclient.RawRequest) (bool, string, string) {
-	host := strings.ToLower(rawReq.Headers["Host"])
-	switch {
-	case strings.Contains(host, "api.ceye.io"):
-		return true, "ceye", "ceye query (api.ceye.io)"
-	case strings.Contains(host, "47.244.138.18") || strings.Contains(host, "dnslog"):
-		return true, "dnslog", "dnslog query (47.244.138.18)"
-	case strings.Contains(host, "callback.red"):
-		return true, "callbackred", "callback.red query"
-	}
-	return false, "", ""
-}
-
 // Executor handles multi-step workflow execution.
 type Executor struct {
 	client    *httpclient.Client
@@ -43,13 +21,14 @@ type Executor struct {
 	onVerbose func(string, ...interface{})
 	onRaw     func(tag, format string, args ...interface{})
 	onPacket  func(tag string, summary string, raw string)
-	logger    LoggerIface
+	logger    interface {
+		DebugKV(msg string, args ...interface{})
+		InfoKV(msg string, args ...interface{})
+		WarnKV(msg string, args ...interface{})
+	}
 
 	// shared variable scope across steps
 	scope map[string]string
-
-	// global headers injected into every request
-	globalHeaders map[string]string
 
 	// activeProvider is the currently active OOB provider (e.g. "ceye", "dnslog", "callbackred")
 	// If empty, all steps execute regardless of provider.
@@ -62,10 +41,18 @@ func New(client *httpclient.Client, timeout int, verbose int,
 	onVerbose func(string, ...interface{}),
 	onRaw func(tag, format string, args ...interface{}),
 	onPacket func(tag string, summary string, raw string),
-	logger LoggerIface,
+	logger interface {
+		DebugKV(msg string, args ...interface{})
+		InfoKV(msg string, args ...interface{})
+		WarnKV(msg string, args ...interface{})
+	},
 	globalHeaders map[string]string,
 	activeProvider string,
 ) *Executor {
+	// Inject global headers into the client so they are sent for all workflow requests.
+	if len(globalHeaders) > 0 {
+		client.SetGlobalHeaders(globalHeaders)
+	}
 	return &Executor{
 		client:         client,
 		timeout:        timeout,
@@ -76,7 +63,6 @@ func New(client *httpclient.Client, timeout int, verbose int,
 		onPacket:       onPacket,
 		logger:         logger,
 		scope:          make(map[string]string),
-		globalHeaders:  globalHeaders,
 		activeProvider: activeProvider,
 	}
 }
@@ -321,7 +307,7 @@ func (e *Executor) executeHTTPBlocks(ctx context.Context, blocks []types.HTTPReq
 
 		// run-if: skip this request block if condition is false.
 		if req.RunIf != "" {
-			if !evalRunIf(req.RunIf, extracted, eng) {
+			if !matcher.EvalRunIf(req.RunIf, extracted, eng) {
 				if e.logger != nil {
 					e.logger.InfoKV("workflow request skipped (run-if false)",
 						"step", stepName, "req", i, "run-if", req.RunIf)
@@ -333,15 +319,10 @@ func (e *Executor) executeHTTPBlocks(ctx context.Context, blocks []types.HTTPReq
 		// Replace placeholders in raw request
 		rawReq := eng.ReplaceWithEscape(req.Raw)
 		if rawReq == "" {
-			// Merge per-request headers with global headers
-			mergedHeaders := make(map[string]string, len(req.Headers)+len(e.globalHeaders))
+			// Merge per-request headers (global headers already injected via client)
+			mergedHeaders := make(map[string]string, len(req.Headers))
 			for k, v := range req.Headers {
 				mergedHeaders[k] = v
-			}
-			for k, v := range e.globalHeaders {
-				if _, exists := mergedHeaders[k]; !exists {
-					mergedHeaders[k] = v
-				}
 			}
 			// Build raw from path with merged headers
 			if len(req.Path) > 0 {
@@ -351,7 +332,7 @@ func (e *Executor) executeHTTPBlocks(ctx context.Context, blocks []types.HTTPReq
 				}
 				// Iterate over all paths in the list
 				for _, p := range req.Path {
-					pathReq := buildRawFromPathWithBodyType(method, p, mergedHeaders, req.Body, req.BodyType)
+					pathReq := httpclient.BuildRawFromPathWithBodyType(method, p, mergedHeaders, req.Body, req.BodyType)
 					pathReq = eng.ReplaceWithEscape(pathReq)
 					if pathReq == "" {
 						continue
@@ -421,7 +402,7 @@ func (e *Executor) executeHTTPBlocks(ctx context.Context, blocks []types.HTTPReq
 						continue
 					}
 					// Inject global headers into raw request
-					finalReq = injectGlobalHeaders(finalReq, e.globalHeaders)
+					finalReq = e.client.InjectGlobalHeaders(finalReq)
 					matched, ev := e.sendWorkflowRequest(ctx, req, finalReq, target, eng, stepIdx, stepName, extracted)
 					results = append(results, matched)
 					if ev != "" {
@@ -434,7 +415,7 @@ func (e *Executor) executeHTTPBlocks(ctx context.Context, blocks []types.HTTPReq
 				}
 				if !rangeSent {
 					// Placeholder not found in any value — send original
-					finalReq := injectGlobalHeaders(rawReq, e.globalHeaders)
+					finalReq := e.client.InjectGlobalHeaders(rawReq)
 					matched, ev := e.sendWorkflowRequest(ctx, req, finalReq, target, eng, stepIdx, stepName, extracted)
 					results = append(results, matched)
 					if ev != "" {
@@ -444,7 +425,7 @@ func (e *Executor) executeHTTPBlocks(ctx context.Context, blocks []types.HTTPReq
 				continue
 			}
 			// Inject global headers into raw request
-			rawReq = injectGlobalHeaders(rawReq, e.globalHeaders)
+			rawReq = e.client.InjectGlobalHeaders(rawReq)
 		}
 
 		matched, ev := e.sendWorkflowRequest(ctx, req, rawReq, target, eng, stepIdx, stepName, extracted)
@@ -494,56 +475,6 @@ func (e *Executor) executeHTTPBlocks(ctx context.Context, blocks []types.HTTPReq
 	return overall, strings.Join(evidence, "; "), extracted
 }
 
-// evalRunIf evaluates a run-if condition for a request block.
-// It checks both the extracted map (from previous requests in the same step)
-// and the engine's extracted values (from previous steps) for variable resolution.
-func evalRunIf(expr string, extracted map[string]string, eng *placeholder.Engine) bool {
-	val := eng.Replace(expr)
-	if val == "" {
-		return false
-	}
-	// Check for unresolved placeholders
-	if strings.Contains(val, "{{") && strings.Contains(val, "}}") {
-		return false
-	}
-	lower := strings.ToLower(strings.TrimSpace(val))
-	if lower == "false" || lower == "0" {
-		return false
-	}
-	// If the expression looks like a DSL expression (contains ==, !=, etc.),
-	// evaluate it using the DSL engine.
-	// Note: for run-if, unknown extracted variables should resolve to ""
-	// (not their name string) so that len(missing) == 0 evaluates correctly.
-	if strings.Contains(val, "==") || strings.Contains(val, "!=") ||
-		strings.Contains(val, ">") || strings.Contains(val, "<") ||
-		strings.Contains(val, "contains") || strings.Contains(val, "regex") ||
-		strings.Contains(val, "!") {
-		// Build a match context with extracted variables from BOTH
-		// the local extracted map AND the engine's extracted values,
-		// so that variables extracted in previous workflow steps are available.
-		mergedVars := make(map[string]string, len(extracted))
-		for k, v := range extracted {
-			mergedVars[k] = v
-		}
-		// Copy engine's extracted values (they take precedence)
-		engineExtracted := eng.GetExtractedMap()
-		for k, v := range engineExtracted {
-			mergedVars[k] = v
-		}
-		ctx := &matcher.MatchContext{
-			StatusCode:     200,
-			Body:           "",
-			Header:         "",
-			ExtractedVars:  mergedVars,
-			UnknownVarMode: "empty",
-		}
-		if result, err := matcher.EvalDSL(val, ctx); err == nil {
-			return result
-		}
-		// If DSL evaluation fails, fall through to default behavior
-	}
-	return true
-}
 
 // topoSort performs a topological sort of workflow steps based on requires.
 func (e *Executor) topoSort(steps []types.WorkflowStep) ([]string, error) {
@@ -593,108 +524,3 @@ func (e *Executor) topoSort(steps []types.WorkflowStep) ([]string, error) {
 	return order, nil
 }
 
-// buildRawFromPath constructs a raw HTTP request string from method, path, headers and body.
-func buildRawFromPath(method, path string, headers map[string]string, body string) string {
-	return buildRawFromPathWithBodyType(method, path, headers, body, "")
-}
-
-// buildRawFromPathWithBodyType constructs a raw HTTP request with body type support.
-func buildRawFromPathWithBodyType(method, path string, headers map[string]string, body, bodyType string) string {
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("%s %s HTTP/1.1\r\n", method, path))
-	sb.WriteString("Host: {{Hostname}}\r\n")
-
-	if bodyType != "" && body != "" {
-		switch strings.ToLower(bodyType) {
-		case "form", "form-urlencoded":
-			for k, v := range headers {
-				sb.WriteString(fmt.Sprintf("%s: %s\r\n", k, v))
-			}
-			sb.WriteString("Content-Type: application/x-www-form-urlencoded\r\n")
-			sb.WriteString("Connection: close\r\n")
-			sb.WriteString("\r\n")
-			sb.WriteString(body)
-			return sb.String()
-		case "multipart", "multipart-form-data":
-			boundary := "----gosleekFormBoundary" + placeholder.RandTextHex(8)
-			contentType := "multipart/form-data; boundary=" + boundary
-			for k, v := range headers {
-				sb.WriteString(fmt.Sprintf("%s: %s\r\n", k, v))
-			}
-			sb.WriteString("Content-Type: " + contentType + "\r\n")
-			sb.WriteString("Connection: close\r\n")
-			sb.WriteString("\r\n")
-			sb.WriteString(buildMultipartBody(body, boundary))
-			return sb.String()
-		}
-	}
-
-	for k, v := range headers {
-		sb.WriteString(fmt.Sprintf("%s: %s\r\n", k, v))
-	}
-	sb.WriteString("Connection: close\r\n")
-	sb.WriteString("\r\n")
-	if body != "" {
-		sb.WriteString(body)
-	}
-	return sb.String()
-}
-
-// buildMultipartBody generates a multipart form body from key=value pairs.
-func buildMultipartBody(body, boundary string) string {
-	var sb strings.Builder
-	for _, line := range strings.Split(body, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		idx := strings.Index(line, "=")
-		if idx < 0 {
-			continue
-		}
-		key := line[:idx]
-		value := line[idx+1:]
-		sb.WriteString("--" + boundary + "\r\n")
-		sb.WriteString(fmt.Sprintf("Content-Disposition: form-data; name=\"%s\"\r\n\r\n", key))
-		sb.WriteString(value + "\r\n")
-	}
-	sb.WriteString("--" + boundary + "--\r\n")
-	return sb.String()
-}
-
-// injectGlobalHeaders inserts global CLI headers into a raw HTTP request string.
-// It inserts missing headers BEFORE the blank line that separates headers from body,
-// so that ParseRaw correctly parses them as HTTP headers rather than body content.
-func injectGlobalHeaders(raw string, headers map[string]string) string {
-	if len(headers) == 0 {
-		return raw
-	}
-	sep := "\r\n\r\n"
-	idx := strings.Index(raw, sep)
-	if idx < 0 {
-		idx = strings.Index(raw, "\n\n")
-	}
-	if idx >= 0 {
-		// Insert BEFORE the blank line so new headers appear in the header block.
-		var sb strings.Builder
-		sb.WriteString(raw[:idx])
-		sb.WriteString("\r\n")
-		for k, v := range headers {
-			sb.WriteString(fmt.Sprintf("%s: %s\r\n", k, v))
-		}
-		sb.WriteString(raw[idx:])
-		return sb.String()
-	}
-	// No separator found — append headers at the end.
-	raw = strings.TrimRight(raw, "\r\n")
-	return raw + "\r\n" + injectHeadersMap(headers)
-}
-
-// injectHeadersMap formats a headers map into HTTP header lines.
-func injectHeadersMap(headers map[string]string) string {
-	var sb strings.Builder
-	for k, v := range headers {
-		sb.WriteString(fmt.Sprintf("%s: %s\r\n", k, v))
-	}
-	return sb.String()
-}

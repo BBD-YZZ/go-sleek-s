@@ -38,10 +38,10 @@ func Filter(plugins []Plugin, opts FilterOptions) []Plugin {
 	out := make([]Plugin, 0, len(plugins))
 	for _, p := range plugins {
 		meta := p.Meta()
-		// By ID
-		if len(opts.TemplateIDs) > 0 {
+		// By ID (using mergedIDs covers both --id and --plugin flags)
+		if len(mergedIDs) > 0 {
 			found := false
-			for _, id := range opts.TemplateIDs {
+			for _, id := range mergedIDs {
 				if strings.EqualFold(meta.ID, id) {
 					found = true
 					break

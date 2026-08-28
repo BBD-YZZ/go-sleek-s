@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/gosleek/gosleek/internal/display"
 	"github.com/gosleek/gosleek/pkg/types"
 )
 
@@ -150,10 +151,10 @@ func writeSARIF(results []*types.Result, path string, toolVersion string) error 
 		if r.RawRequest != "" || r.RawResponse != "" {
 			var msgs []SARIFMessage
 			if r.RawRequest != "" {
-				msgs = append(msgs, SARIFMessage{Text: "Request: " + truncate(r.RawRequest, 200)})
+				msgs = append(msgs, SARIFMessage{Text: "Request: " + display.Truncate(r.RawRequest, 200)})
 			}
 			if r.RawResponse != "" {
-				msgs = append(msgs, SARIFMessage{Text: "Response: " + truncate(r.RawResponse, 200)})
+				msgs = append(msgs, SARIFMessage{Text: "Response: " + display.Truncate(r.RawResponse, 200)})
 			}
 			if len(msgs) > 0 {
 				codeFlows = []SARIFCodeFlow{{ThreadFlows: []SARIFThreadFlow{{Messages: msgs}}}}

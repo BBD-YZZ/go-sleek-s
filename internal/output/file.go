@@ -106,7 +106,7 @@ func writeHTML(results []*types.Result, path string) error {
 	sb.WriteString(".badge-high { background: #ff8c0022; color: #ff8c00; }\n")
 	sb.WriteString(".badge-medium { background: #ffd70022; color: #ffd700; }\n")
 	sb.WriteString(".badge-low { background: #87ceeb22; color: #87ceeb; }\n")
-	sb.WriteString(".badge-info { background: #aaa22; color: #aaa; }\n")
+	sb.WriteString(".badge-info { background: #aaa222; color: #aaa; }\n")
 	sb.WriteString(".stats { display: flex; gap: 2em; margin: 1em 0; }\n")
 	sb.WriteString(".stat { background: #1a1a2e; padding: 1em 2em; border-radius: 8px; }\n")
 	sb.WriteString(".stat-value { font-size: 2em; font-weight: bold; color: #00d4ff; }\n")

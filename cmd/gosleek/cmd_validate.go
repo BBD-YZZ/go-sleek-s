@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/gosleek/gosleek/internal/display"
 	"github.com/gosleek/gosleek/internal/output"
 	"github.com/gosleek/gosleek/internal/template"
 	"github.com/gosleek/gosleek/pkg/constants"
@@ -109,9 +110,9 @@ func runValidate(args []string) {
 		var rows [][]string
 		for _, r := range results {
 			rows = append(rows, []string{
-				truncate(r.path, 40),
+				display.Truncate(r.path, 40),
 				r.id,
-				truncate(r.name, 40),
+				display.Truncate(r.name, 40),
 				r.status,
 			})
 		}

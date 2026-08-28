@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -587,7 +586,7 @@ func (s *Scanner) executeHTTP(ctx context.Context, tmpl *types.Template, target 
 			}
 
 			if req.RunIf != "" {
-				if !evalRunIf(req.RunIf, allExtracted, eng) {
+				if !matcher.EvalRunIf(req.RunIf, allExtracted, eng) {
 					s.debug("[SKIP]   run-if false: %s req[%d]", tmpl.ID, i)
 					continue
 				}
@@ -1169,130 +1168,6 @@ func aggregateMatches(results []bool, cond string) bool {
 	return false
 }
 
-// evalRunIf evaluates a run-if condition for a request block.
-//
-// [批次A-6 修复点] 旧实现仅检查替换后的值是否非空, 但当占位符无法解析时
-// (例如引用了一个不存在的提取器变量), eng.Replace 会返回字面量 "{{var}}",
-// 这是非空字符串, 导致条件错误地为 true。现在增加未解析占位符检测:
-// 如果结果中仍包含 "{{...}}" 模式, 说明依赖的变量不存在, 应返回 false。
-func evalRunIf(expr string, extracted map[string]string, eng *placeholder.Engine) bool {
-	val := eng.Replace(expr)
-	if val == "" {
-		return false
-	}
-	// Check for unresolved placeholders using a regex that matches
-	// complete {{...}} patterns. This avoids false positives when the
-	// user's expression legitimately contains literal "{{" or "}}".
-	if unresolvedPlaceholderRe.MatchString(val) {
-		return false
-	}
-	// Literal "false" or "0" → false
-	lower := strings.ToLower(strings.TrimSpace(val))
-	if lower == "false" || lower == "0" {
-		return false
-	}
-	// If the expression looks like a DSL expression (contains ==, !=, etc.),
-	// evaluate it using the DSL engine
-	if strings.Contains(val, "==") || strings.Contains(val, "!=") ||
-		strings.Contains(val, ">") || strings.Contains(val, "<") ||
-		strings.Contains(val, "contains") || strings.Contains(val, "regex") ||
-		strings.Contains(val, "!") {
-		// Build a match context with extracted variables
-		ctx := &matcher.MatchContext{
-			StatusCode:    200,
-			Body:          "",
-			Header:        "",
-			ExtractedVars: extracted,
-		}
-		if result, err := matcher.EvalDSL(val, ctx); err == nil {
-			return result
-		}
-		// If DSL evaluation fails, fall through to default behavior
-	}
-	return true
-}
-
-// unresolvedPlaceholderRe matches a complete {{...}} placeholder.
-var unresolvedPlaceholderRe = regexp.MustCompile(`\{\{[^}]+\}\}`)
-
-func buildRawFromPath(method, path string, headers map[string]string, body string) string {
-	return buildRawFromPathWithBodyType(method, path, headers, body, "")
-}
-
-func buildRawFromPathWithBodyType(method, path string, headers map[string]string, body, bodyType string) string {
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("%s %s HTTP/1.1\r\n", method, path))
-	sb.WriteString("Host: {{Hostname}}\r\n")
-
-	// If body-type is specified and body is non-empty, generate appropriate body
-	if bodyType != "" && body != "" {
-		switch strings.ToLower(bodyType) {
-		case "form", "form-urlencoded":
-			// Parse body as key=value pairs and set Content-Type
-			for k, v := range headers {
-				sb.WriteString(fmt.Sprintf("%s: %s\r\n", k, v))
-			}
-			sb.WriteString("Content-Type: application/x-www-form-urlencoded\r\n")
-			sb.WriteString("Connection: close\r\n")
-			sb.WriteString("\r\n")
-			sb.WriteString(body)
-			return sb.String()
-		case "multipart", "multipart-form-data":
-			// Parse body as key=value pairs and generate multipart
-			boundary := "----gosleekFormBoundary" + placeholder.RandTextHex(8)
-			contentType := "multipart/form-data; boundary=" + boundary
-			for k, v := range headers {
-				sb.WriteString(fmt.Sprintf("%s: %s\r\n", k, v))
-			}
-			sb.WriteString("Content-Type: " + contentType + "\r\n")
-			sb.WriteString("Connection: close\r\n")
-			sb.WriteString("\r\n")
-			sb.WriteString(buildMultipartBody(body, boundary))
-			return sb.String()
-		}
-	}
-
-	for k, v := range headers {
-		sb.WriteString(fmt.Sprintf("%s: %s\r\n", k, v))
-	}
-	sb.WriteString("Connection: close\r\n")
-	sb.WriteString("\r\n")
-	if body != "" {
-		sb.WriteString(body)
-	}
-	return sb.String()
-}
-
-// buildMultipartBody generates a multipart form body from key=value pairs.
-func buildMultipartBody(body, boundary string) string {
-	var sb strings.Builder
-	for _, line := range strings.Split(body, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		idx := strings.Index(line, "=")
-		if idx < 0 {
-			continue
-		}
-		key := line[:idx]
-		value := line[idx+1:]
-		sb.WriteString("--" + boundary + "\r\n")
-		sb.WriteString(fmt.Sprintf("Content-Disposition: form-data; name=\"%s\"\r\n\r\n", key))
-		sb.WriteString(value + "\r\n")
-	}
-	sb.WriteString("--" + boundary + "--\r\n")
-	return sb.String()
-}
-
-func parseDuration(s string) time.Duration {
-	d, err := time.ParseDuration(s)
-	if err != nil {
-		return 2 * time.Second
-	}
-	return d
-}
-
 // truncateStr truncates s to max display width with ellipsis.
 func truncateStr(s string, max int) string {
 	if len(s) <= max {
@@ -1327,3 +1202,12 @@ type noopPluginLogger struct {
 func (l *noopPluginLogger) Info(msg string, args ...interface{})   {}
 func (l *noopPluginLogger) Debug(msg string, args ...interface{})  {}
 func (l *noopPluginLogger) Error(msg string, args ...interface{})  {}
+
+// parseDuration parses a duration string, falling back to 2s on error.
+func parseDuration(s string) time.Duration {
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 2 * time.Second
+	}
+	return d
+}

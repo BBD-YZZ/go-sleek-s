@@ -16,6 +16,7 @@ type GlobalConfig struct {
 	UserAgent      string `yaml:"user-agent"`
 	DefaultTimeout int    `yaml:"default-timeout"`
 	MaxRedirects   int    `yaml:"max-redirects"`
+	FollowRedirect bool   `yaml:"follow-redirects"` // false = never follow redirects
 	MaxBodySize    int64  `yaml:"max-body-size"` // max response body size in bytes (0 = unlimited)
 	AllowExternal  bool   `yaml:"allow-external-hosts"`
 
@@ -75,6 +76,7 @@ func DefaultConfig() *GlobalConfig {
 		UserAgent:            "Mozilla/5.0 (compatible; gosleek/1.0)",
 		DefaultTimeout:       10,
 		MaxRedirects:         3,
+		FollowRedirect:       true,
 		MaxBodySize:          10 * 1024 * 1024, // 10MB default
 		AllowExternal:        false,
 		Concurrency:          25,

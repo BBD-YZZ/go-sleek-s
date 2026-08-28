@@ -190,12 +190,22 @@ func (d *dnslogProvider) getRecords(ctx context.Context) (bool, error) {
 		return false, err
 	}
 
-	// Match: row[0] contains label (case-insensitive)
+	// Match: row[0] must contain our label as a complete DNS subdomain segment
+	// (e.g. label="hdmwny" matches "hdmwny.dnslog.cn" but NOT "ahdmwny.dnslog.cn").
+	// Strict segment matching prevents single-char labels from accidentally
+	// matching unrelated DNS records.
 	for _, row := range raw {
 		if len(row) >= 1 {
-			if strings.EqualFold(row[0], d.domain) ||
-				strings.Contains(strings.ToLower(row[0]), strings.ToLower(d.label)) {
+			// Exact full-domain match
+			if row[0] == d.domain {
 				return true, nil
+			}
+			// Segment-exact match: label must appear as a complete dot-delimited segment
+			segments := strings.Split(strings.ToLower(row[0]), ".")
+			for _, seg := range segments {
+				if seg == strings.ToLower(d.label) {
+					return true, nil
+				}
 			}
 		}
 	}

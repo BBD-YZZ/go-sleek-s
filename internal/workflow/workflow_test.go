@@ -387,9 +387,9 @@ func TestEvalRunIf(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := evalRunIf(tt.expr, tt.extracted, eng)
+			got := matcher.EvalRunIf(tt.expr, tt.extracted, eng)
 			if got != tt.want {
-				t.Errorf("evalRunIf(%q) = %v, want %v", tt.expr, got, tt.want)
+				t.Errorf("matcher.EvalRunIf(%q) = %v, want %v", tt.expr, got, tt.want)
 			}
 		})
 	}

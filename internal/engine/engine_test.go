@@ -6,10 +6,11 @@ import (
 
 	"github.com/gosleek/gosleek/internal/placeholder"
 	"github.com/gosleek/gosleek/pkg/types"
+	"github.com/gosleek/gosleek/internal/matcher"
 
 	"github.com/gosleek/gosleek/internal/httpclient")
 
-// TestEvaluateRunIf tests the evalRunIf function with various inputs
+// TestEvaluateRunIf tests the matcher.EvalRunIf function with various inputs
 func TestEvaluateRunIf(t *testing.T) {
 	ti := placeholder.ParseTarget("http://example.com:8080")
 	eng := placeholder.New(ti, nil)
@@ -29,9 +30,9 @@ func TestEvaluateRunIf(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := evalRunIf(tt.expr, tt.extracted, eng)
+			got := matcher.EvalRunIf(tt.expr, tt.extracted, eng)
 			if got != tt.want {
-				t.Errorf("evalRunIf(%q) = %v, want %v", tt.expr, got, tt.want)
+				t.Errorf("matcher.EvalRunIf(%q) = %v, want %v", tt.expr, got, tt.want)
 			}
 		})
 	}
@@ -94,9 +95,9 @@ func TestEvalRunIfDSLExpression(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := evalRunIf(tt.expr, extracted, eng)
+			got := matcher.EvalRunIf(tt.expr, extracted, eng)
 			if got != tt.want {
-				t.Errorf("evalRunIf(%q) = %v, want %v", tt.expr, got, tt.want)
+				t.Errorf("matcher.EvalRunIf(%q) = %v, want %v", tt.expr, got, tt.want)
 			}
 		})
 	}

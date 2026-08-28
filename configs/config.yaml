@@ -29,7 +29,7 @@ log-level: "debug"  # debug, info, warn, error
 # === OOB 带外验证配置 ===
 # 优先级: 命令行参数 > 此配置文件 > oob.yaml
 oob:
-  enabled: false
+  enabled: true
   provider: dnslog          # ceye / dnslog / callbackred
 
   ceye:

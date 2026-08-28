@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/gosleek/gosleek/internal/display"
 	"github.com/gosleek/gosleek/internal/output"
 	"github.com/gosleek/gosleek/internal/plugin"
 	"github.com/gosleek/gosleek/internal/template"
@@ -43,15 +44,32 @@ func runList(args []string) {
 		return
 	}
 
+	var idFilter []string
+	if *id != "" {
+		idFilter = []string{*id}
+	}
+	var sevFilter []string
+	if *severity != "" {
+		sevFilter = []string{*severity}
+	}
+	var tagFilter []string
+	if *tags != "" {
+		tagFilter = strings.Split(*tags, ",")
+	}
+	var excludeFilter []string
+	if *exclude != "" {
+		excludeFilter = strings.Split(*exclude, ",")
+	}
+
 	var templates []*types.Template
 	if !*pluginsOnly {
 		if loaded, err := template.LoadDir(*templatesDir); err == nil {
-			templates = filterTemplates(loaded, *id, *tags, *severity, *exclude)
+			templates = template.ExcludeByID(template.FilterBySeverity(template.FilterByTag(template.FilterByID(loaded, idFilter), tagFilter), sevFilter), excludeFilter)
 		}
 	}
 
 	var pluginList []plugin.Plugin
-	pluginList = filterPlugins(plugin.All(), *id, *tags, *severity, *exclude)
+	pluginList = plugin.Filter(plugin.All(), plugin.FilterOptions{PluginIDs: idFilter, Tags: tagFilter, Severity: sevFilter, ExcludeIDs: excludeFilter})
 
 	type entry struct {
 		typ  string
@@ -92,9 +110,9 @@ func runList(args []string) {
 			result = append(result, []string{
 				typLabel(e.typ),
 				e.id,
-				truncate(e.name, 50),
+				display.Truncate(e.name, 50),
 				severityBadge(e.sev),
-				truncate(e.author, 10),
+				display.Truncate(e.author, 10),
 				e.tags,
 			})
 		}
@@ -137,19 +155,19 @@ func severityBadge(sev string) string {
 
 func showListHelp() {
 	pterm.Println()
-	pterm.Println(pterm.Bold.Sprint("  Usage: gosleek list [options]"))
+	pterm.Println(pterm.Bold.Sprint("  用法: gosleek list [选项]"))
 	pterm.Println()
-	pterm.Println(pterm.Bold.Sprint("  Options:"))
+	pterm.Println(pterm.Bold.Sprint("  选项:"))
 	pterm.Println(pterm.Gray(strings.Repeat("─", 55)))
-	pterm.Println("    -T, --templates <dir>   Template directory (default: templates)")
-	pterm.Println("    --plugins-only          Show only Go plugins")
-	pterm.Println("    --tags <t,t>            Filter by tags")
-	pterm.Println("    --severity <s,s>        Filter by severity")
-	pterm.Println("    -e, --exclude <id>      Exclude template ID")
-	pterm.Println("    -id, --id <id>          Filter by ID")
-	pterm.Println("    -h, --help              Show this help message")
+	pterm.Println("    -T, --templates <dir>   模板目录（默认: templates）")
+	pterm.Println("    --plugins-only          仅显示 Go 插件")
+	pterm.Println("    --tags <t,t>            按标签筛选")
+	pterm.Println("    --severity <s,s>        按严重度筛选")
+	pterm.Println("    -e, --exclude <id>      排除指定 ID")
+	pterm.Println("    -id, --id <id>          按 ID 筛选")
+	pterm.Println("    -h, --help              显示此帮助信息")
 	pterm.Println()
-	pterm.Println(pterm.Bold.Sprint("  Examples:"))
+	pterm.Println(pterm.Bold.Sprint("  示例:"))
 	pterm.Println(pterm.Gray(strings.Repeat("─", 55)))
 	pterm.Println("    gosleek list")
 	pterm.Println("    gosleek list --plugins-only")

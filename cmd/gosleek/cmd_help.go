@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/gosleek/gosleek/internal/display"
 	"github.com/pterm/pterm"
 )
 
@@ -17,7 +18,7 @@ func printGlobalHelp() {
 	printHelpRow("  scan", "  扫描目标漏洞")
 	printHelpRow("  list", "  列出/筛选可用模板")
 	printHelpRow("  validate", "  校验模板语法")
-	printHelpRow("  replay", "  复放命中的请求（调试用）")
+	printHelpRow("  replay", "  复放命中的请求（调试用）[Beta]")
 	printHelpRow("  version", "  显示版本信息")
 	printHelpRow("  help", "  显示帮助信息")
 	pterm.Println(pterm.Gray(strings.Repeat("─", 75)))
@@ -40,7 +41,7 @@ func printGlobalHelp() {
 // printHelpRow prints a command/flag row with consistent alignment.
 func printHelpRow(cmd, desc string) {
 	cmdW := 22
-	cmdDisp := padRight(cmd, cmdW)
+	cmdDisp := display.PadRight(cmd, cmdW)
 	pterm.Printf("  %s%s\n", cmdDisp, desc)
 }
 

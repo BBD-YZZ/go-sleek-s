@@ -140,8 +140,11 @@ func runScan(args []string) {
 	if *templatesDir == "templates" && cfg.TemplateDir != "" {
 		templatesDir = &cfg.TemplateDir
 	}
-	if !*followRedirects {
-		// flag default is true, only apply config if explicitly false
+	if !*followRedirects && cfg.AllowExternal {
+		// CLI explicitly disabled redirects — nothing to do
+	} else if *followRedirects && !cfg.FollowRedirect {
+		// CLI at default (true) but config says false — respect config
+		followRedirects = &cfg.FollowRedirect
 	}
 	if !*allowExternal && cfg.AllowExternal {
 		allowExternal = &cfg.AllowExternal
@@ -181,8 +184,24 @@ func runScan(args []string) {
 
 	var tmplList []*types.Template
 	if !*pluginsOnly {
+		var idFilter []string
+		if *templateID != "" {
+			idFilter = []string{*templateID}
+		}
+		var sevFilter []string
+		if *severity != "" {
+			sevFilter = []string{*severity}
+		}
+		var tagFilter []string
+		if *tags != "" {
+			tagFilter = strings.Split(*tags, ",")
+		}
+		var excludeFilter []string
+		if *exclude != "" {
+			excludeFilter = strings.Split(*exclude, ",")
+		}
 		if loaded, err := template.LoadDir(*templatesDir); err == nil {
-			tmplList = filterTemplates(loaded, *templateID, *tags, *severity, *exclude)
+			tmplList = template.ExcludeByID(template.FilterBySeverity(template.FilterByTag(template.FilterByID(loaded, idFilter), tagFilter), sevFilter), excludeFilter)
 		}
 	}
 
@@ -193,7 +212,28 @@ func runScan(args []string) {
 	if pluginFilterID == "" && *templateID != "" {
 		pluginFilterID = *templateID
 	}
-	pluginList := filterPlugins(allPlugins, pluginFilterID, *tags, *severity, *exclude)
+	var pluginFilterIDs []string
+	if pluginFilterID != "" {
+		pluginFilterIDs = []string{pluginFilterID}
+	}
+	var filterTagsList []string
+	if *tags != "" {
+		filterTagsList = strings.Split(*tags, ",")
+	}
+	var filterSevList []string
+	if *severity != "" {
+		filterSevList = []string{*severity}
+	}
+	var filterExcludeList []string
+	if *exclude != "" {
+		filterExcludeList = strings.Split(*exclude, ",")
+	}
+	pluginList := plugin.Filter(allPlugins, plugin.FilterOptions{
+		PluginIDs:  pluginFilterIDs,
+		Tags:       filterTagsList,
+		Severity:   filterSevList,
+		ExcludeIDs: filterExcludeList,
+	})
 	// 如果是 plugins-only 模式或指定了 --plugin，清空模板列表
 	if *pluginsOnly || *pluginID != "" {
 		tmplList = nil
@@ -309,22 +349,31 @@ func runScan(args []string) {
 	scanner.SetCallbacks(onResult, onProgress, onVerbose, onDebug, onRaw, onPacket)
 
 	// Logger — 始终初始化 logger，确保插件在 -v/-vv 时能输出日志（即使没有 --log-file）
-	if *logFile != "" {
-		logger := output.NewLogger(*logFile, *logLevel, verb)
+	// 优先级: CLI flag > config.yaml > 默认值
+	actualLogFile := *logFile
+	actualLogLevel := *logLevel
+	if actualLogFile == "" && cfg.LogFile != "" {
+		actualLogFile = cfg.LogFile
+	}
+	if actualLogLevel == "" && cfg.LogLevel != "" {
+		actualLogLevel = cfg.LogLevel
+	}
+	if actualLogFile != "" {
+		logger := output.NewLogger(actualLogFile, actualLogLevel, verb)
 		scanner.SetLogger(logger)
 	} else if verb >= 0 {
 		// 无 log-file 但有 -v/-vv 时，创建无文件输出的 logger，确保插件有日志能力
-		logger := output.NewLogger("", *logLevel, verb)
+		logger := output.NewLogger("", actualLogLevel, verb)
 		scanner.SetLogger(logger)
 	}
 
 	// Post-scan filters
-	var filterSev, filterTagsList []string
+	var filterSev, filterTagList []string
 	if *filterSeverity != "" {
 		filterSev = strings.Split(*filterSeverity, ",")
 	}
 	if *filterTags != "" {
-		filterTagsList = strings.Split(*filterTags, ",")
+		filterTagList = strings.Split(*filterTags, ",")
 	}
 
 	// OOB 警告：如果启用了 OOB 但配置不完整，或需要 OOB 但未启用
@@ -374,7 +423,7 @@ func runScan(args []string) {
 	// Apply filters
 	var filtered []*types.Result
 	for _, r := range results {
-		if matchSeverityFilter(r.Severity, filterSev) && matchTagsFilter(r.Tags, filterTagsList) {
+		if matchSeverityFilter(r.Severity, filterSev) && matchTagsFilter(r.Tags, filterTagList) {
 			filtered = append(filtered, r)
 		}
 	}
@@ -416,124 +465,3 @@ func matchTagsFilter(tags []string, filters []string) bool {
 	return false
 }
 
-func filterTemplates(tmpls []*types.Template, id, tags, severity, exclude string) []*types.Template {
-	var result []*types.Template
-	for _, t := range tmpls {
-		if id != "" && t.ID != id {
-			continue
-		}
-		if exclude != "" {
-			skip := false
-			for _, e := range strings.Split(exclude, ",") {
-				if t.ID == strings.TrimSpace(e) {
-					skip = true
-					break
-				}
-			}
-			if skip {
-				continue
-			}
-		}
-		if tags != "" {
-			found := false
-			for _, t2 := range strings.Split(tags, ",") {
-				tag := strings.TrimSpace(t2)
-				for _, tag2 := range t.Tags {
-					if tag2 == tag {
-						found = true
-						break
-					}
-				}
-				if found {
-					break
-				}
-			}
-			if !found {
-				continue
-			}
-		}
-		if severity != "" {
-			found := false
-			for _, s := range strings.Split(severity, ",") {
-				if strings.ToLower(t.Severity) == strings.TrimSpace(s) {
-					found = true
-					break
-				}
-			}
-			if !found {
-				continue
-			}
-		}
-		result = append(result, t)
-	}
-	return result
-}
-
-func filterPlugins(all []plugin.Plugin, id, tags, severity, exclude string) []plugin.Plugin {
-	out := all
-	// Filter by ID
-	if id != "" {
-		idSet := make(map[string]bool)
-		for _, v := range strings.Split(id, ",") {
-			idSet[strings.ToLower(strings.TrimSpace(v))] = true
-		}
-		var filtered []plugin.Plugin
-		for _, p := range out {
-			meta := p.Meta()
-			if idSet[strings.ToLower(meta.ID)] {
-				filtered = append(filtered, p)
-			}
-		}
-		out = filtered
-	}
-	// Filter by severity
-	if severity != "" {
-		sevSet := make(map[string]bool)
-		for _, v := range strings.Split(severity, ",") {
-			sevSet[strings.ToLower(strings.TrimSpace(v))] = true
-		}
-		var filtered []plugin.Plugin
-		for _, p := range out {
-			if sevSet[strings.ToLower(p.Meta().Severity)] {
-				filtered = append(filtered, p)
-			}
-		}
-		out = filtered
-	}
-	// Filter by tags
-	if tags != "" {
-		tagSet := make(map[string]bool)
-		for _, v := range strings.Split(tags, ",") {
-			tagSet[strings.ToLower(strings.TrimSpace(v))] = true
-		}
-		var filtered []plugin.Plugin
-		for _, p := range out {
-			found := false
-			for _, t := range p.Meta().Tags {
-				if tagSet[strings.ToLower(t)] {
-					found = true
-					break
-				}
-			}
-			if found {
-				filtered = append(filtered, p)
-			}
-		}
-		out = filtered
-	}
-	// Exclude
-	if exclude != "" {
-		exclSet := make(map[string]bool)
-		for _, v := range strings.Split(exclude, ",") {
-			exclSet[strings.ToLower(strings.TrimSpace(v))] = true
-		}
-		var filtered []plugin.Plugin
-		for _, p := range out {
-			if !exclSet[strings.ToLower(p.Meta().ID)] {
-				filtered = append(filtered, p)
-			}
-		}
-		out = filtered
-	}
-	return out
-}

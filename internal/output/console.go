@@ -8,6 +8,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/gosleek/gosleek/internal/display"
+	"github.com/gosleek/gosleek/internal/replay"
 	"github.com/gosleek/gosleek/pkg/types"
 	"github.com/pterm/pterm"
 )
@@ -266,23 +268,23 @@ func (c *Console) PrintScanConfig(info ScanConfigInfo) {
 	maxLK := 0
 	maxLV := 0
 	for _, it := range left {
-		if w := displayWidth(it.k); w > maxLK {
+		if w := display.DisplayWidth(it.k); w > maxLK {
 			maxLK = w
 		}
 		// For value width, strip ANSI to get plain text width
-		plainV := stripAnsi(it.v)
-		if w := displayWidth(plainV); w > maxLV {
+		plainV := display.StripAnsi(it.v)
+		if w := display.DisplayWidth(plainV); w > maxLV {
 			maxLV = w
 		}
 	}
 	maxRK := 0
 	maxRV := 0
 	for _, it := range right {
-		if w := displayWidth(it.k); w > maxRK {
+		if w := display.DisplayWidth(it.k); w > maxRK {
 			maxRK = w
 		}
-		plainV := stripAnsi(it.v)
-		if w := displayWidth(plainV); w > maxRV {
+		plainV := display.StripAnsi(it.v)
+		if w := display.DisplayWidth(plainV); w > maxRV {
 			maxRV = w
 		}
 	}
@@ -303,11 +305,11 @@ func (c *Console) PrintScanConfig(info ScanConfigInfo) {
 		if i < len(left) {
 			it := left[i]
 			seg := fmt.Sprintf("%s%s  %s",
-				pterm.LightCyan(padRight(it.k, maxLK)),
+				pterm.LightCyan(display.PadRight(it.k, maxLK)),
 				":",
 				it.v,
 			)
-			segW := displayWidth(stripAnsi(seg))
+			segW := display.DisplayWidth(display.StripAnsi(seg))
 			pad := leftColW - segW
 			if pad < 0 {
 				pad = 0
@@ -322,7 +324,7 @@ func (c *Console) PrintScanConfig(info ScanConfigInfo) {
 		if i < len(right) {
 			it := right[i]
 			seg := fmt.Sprintf("%s%s  %s",
-				pterm.LightCyan(padRight(it.k, maxRK)),
+				pterm.LightCyan(display.PadRight(it.k, maxRK)),
 				":",
 				it.v,
 			)
@@ -547,15 +549,15 @@ func (c *Console) PrintResult(r *types.Result) {
 	body = append(body, resultKV("模板", pterm.Cyan(r.TemplateID)))
 	if r.Description != "" {
 		desc := strings.Join(strings.Fields(r.Description), " ")
-		body = append(body, resultKV("描述", truncate(desc, 80)))
+		body = append(body, resultKV("描述", display.Truncate(desc, 80)))
 	}
 	if r.Evidence != "" {
-		body = append(body, resultKV("证据", pterm.LightWhite(truncate(r.Evidence, 100))))
+		body = append(body, resultKV("证据", pterm.LightWhite(display.Truncate(r.Evidence, 100))))
 	}
 	if len(r.Extracted) > 0 {
 		var parts []string
 		for k, v := range r.Extracted {
-			parts = append(parts, fmt.Sprintf("%s=%s", k, truncate(v, 40)))
+			parts = append(parts, fmt.Sprintf("%s=%s", k, display.Truncate(v, 40)))
 		}
 		body = append(body, resultKV("提取", pterm.LightWhite(strings.Join(parts, ", "))))
 	}
@@ -653,19 +655,19 @@ func (c *Console) PrintScanEnd(total, matched int64) {
 	rightSepW := 2 + 2
 	maxLK, maxLV := 0, 0
 	for _, it := range leftItems {
-		if w := displayWidth(it.k); w > maxLK {
+		if w := display.DisplayWidth(it.k); w > maxLK {
 			maxLK = w
 		}
-		if w := displayWidth(stripAnsi(it.v)); w > maxLV {
+		if w := display.DisplayWidth(display.StripAnsi(it.v)); w > maxLV {
 			maxLV = w
 		}
 	}
 	maxRK, maxRV := 0, 0
 	for _, it := range ratePctItems {
-		if w := displayWidth(it.k); w > maxRK {
+		if w := display.DisplayWidth(it.k); w > maxRK {
 			maxRK = w
 		}
-		if w := displayWidth(stripAnsi(it.v)); w > maxRV {
+		if w := display.DisplayWidth(display.StripAnsi(it.v)); w > maxRV {
 			maxRV = w
 		}
 	}
@@ -683,11 +685,11 @@ func (c *Console) PrintScanEnd(total, matched int64) {
 		if i < len(leftItems) {
 			it := leftItems[i]
 			seg := fmt.Sprintf("%s%s  %s",
-				pterm.LightCyan(padRight(it.k, maxLK)),
+				pterm.LightCyan(display.PadRight(it.k, maxLK)),
 				"：",
 				it.v,
 			)
-			segW := displayWidth(stripAnsi(seg))
+			segW := display.DisplayWidth(display.StripAnsi(seg))
 			pad := leftColW - segW
 			if pad < 0 {
 				pad = 0
@@ -702,7 +704,7 @@ func (c *Console) PrintScanEnd(total, matched int64) {
 		if i < len(ratePctItems) {
 			it := ratePctItems[i]
 			seg := fmt.Sprintf("%s%s  %s",
-				pterm.LightCyan(padRight(it.k, maxRK)),
+				pterm.LightCyan(display.PadRight(it.k, maxRK)),
 				"：",
 				it.v,
 			)
@@ -781,38 +783,12 @@ func cardItem(label, value string) string {
 // It uses a fixed key width for alignment and a subtle "›" separator.
 func resultKV(key, value string) string {
 	const keyW = 6
-	k := padRight(key, keyW)
+	k := display.PadRight(key, keyW)
 	return fmt.Sprintf("    %s%s  %s",
 		pterm.LightMagenta(k),
 		pterm.Gray("›"),
 		value,
 	)
-}
-
-// padRight pads s with spaces to target display width n (CJK-aware).
-func padRight(s string, n int) string {
-	w := displayWidth(s)
-	if w >= n {
-		return s
-	}
-	return s + strings.Repeat(" ", n-w)
-}
-
-// truncate shortens a string with an ellipsis if it exceeds max display width.
-func truncate(s string, max int) string {
-	if displayWidth(s) <= max {
-		return s
-	}
-	runes := []rune(s)
-	w := 0
-	for i, r := range runes {
-		rw := runeDisplayWidth(r)
-		if w+rw > max-1 {
-			return string(runes[:i]) + "…"
-		}
-		w += rw
-	}
-	return string(runes) + "…"
 }
 
 // printCard draws a clean card with:
@@ -836,7 +812,7 @@ func truncate(s string, max int) string {
 //	──────────────────────────────────────────
 func (c *Console) printCard(title string, accent func(a ...interface{}) string, body []string, width int) {
 	if title != "" {
-		titleW := displayWidth(title)
+		titleW := display.DisplayWidth(title)
 		// "── " (3) + title + " " (1) + "─*"
 		used := 3 + titleW + 1
 		dashes := width - used
@@ -854,83 +830,6 @@ func (c *Console) printCard(title string, accent func(a ...interface{}) string, 
 	}
 	pterm.Println(pterm.Gray(strings.Repeat("─", width)))
 	pterm.Println()
-}
-
-// stripAnsi strips ANSI escape sequences from s (for width checks).
-func stripAnsi(s string) string {
-	var b strings.Builder
-	b.Grow(len(s))
-	inEsc := false
-	for _, r := range s {
-		if r == 0x1b {
-			inEsc = true
-			continue
-		}
-		if inEsc {
-			if r == 'm' {
-				inEsc = false
-			}
-			continue
-		}
-		b.WriteRune(r)
-	}
-	return b.String()
-}
-
-// displayWidth returns the visual width of s in terminal columns,
-// accounting for ANSI escape sequences (stripped) and CJK double-width chars.
-func displayWidth(s string) int {
-	var n int
-	inEsc := false
-	for _, r := range s {
-		if r == 0x1b {
-			inEsc = true
-			continue
-		}
-		if inEsc {
-			if r == 'm' {
-				inEsc = false
-			}
-			continue
-		}
-		n += runeDisplayWidth(r)
-	}
-	return n
-}
-
-// runeDisplayWidth returns the display width of a single rune.
-// CJK and fullwidth characters take 2 columns; most others take 1.
-func runeDisplayWidth(r rune) int {
-	if r == 0 || r < 0x20 {
-		return 0
-	}
-	switch {
-	case r >= 0x1100 && r <= 0x115F: // Hangul Jamo
-		return 2
-	case r >= 0x2E80 && r <= 0x303E: // CJK Radicals, Kangxi
-		return 2
-	case r >= 0x3040 && r <= 0x33BF: // Hiragana, Katakana, CJK
-		return 2
-	case r >= 0x3400 && r <= 0x4DBF: // CJK Ext A
-		return 2
-	case r >= 0x4E00 && r <= 0x9FFF: // CJK Unified
-		return 2
-	case r >= 0xA000 && r <= 0xA4CF: // Yi
-		return 2
-	case r >= 0xAC00 && r <= 0xD7A3: // Hangul Syllables
-		return 2
-	case r >= 0xF900 && r <= 0xFAFF: // CJK Compatibility
-		return 2
-	case r >= 0xFE30 && r <= 0xFE4F: // CJK Compatibility Forms
-		return 2
-	case r >= 0xFF00 && r <= 0xFF60: // Fullwidth Forms
-		return 2
-	case r >= 0xFFE0 && r <= 0xFFE6: // Fullwidth Signs
-		return 2
-	case r >= 0x20000 && r <= 0x3FFFD: // CJK Ext B-F
-		return 2
-	}
-	return 1
 }
 
 // severityPColor returns the pterm color function for a severity.
@@ -965,5 +864,173 @@ func oobProviderLabel(provider, domain string) string {
 		return "ceye.io"
 	default:
 		return provider
+	}
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Replay output
+// ──────────────────────────────────────────────────────────────────────────
+
+// PrintReplayResult prints a replay result card with status, timing and summary.
+func (c *Console) PrintReplayResult(r *replay.Result) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	pterm.Println()
+	pterm.Println(pterm.Bold.Sprint("  请求回放"))
+	pterm.Println(pterm.Gray(strings.Repeat("─", 75)))
+	pterm.Println()
+
+	// Status indicator
+	statusColor := pterm.Green
+	if r.Error != nil {
+		statusColor = pterm.Red
+	} else if r.StatusCode >= 400 {
+		statusColor = pterm.Yellow
+	} else if r.StatusCode >= 300 {
+		statusColor = pterm.Cyan
+	}
+
+	pterm.Printf("  %s  %s\n", statusColor("◼"),
+		statusColor(fmt.Sprintf("HTTP %d", r.StatusCode)))
+	pterm.Println()
+
+	// Details
+	pterm.Println(pterm.Bold.Sprint("  信息:"))
+	pterm.Println(pterm.Gray(strings.Repeat("─", 75)))
+	pterm.Println(fmt.Sprintf("    %s%s  %s",
+		pterm.LightMagenta(display.PadRight("目标", 8)),
+		pterm.Gray("›"),
+		r.Target))
+	pterm.Println(fmt.Sprintf("    %s%s  %s",
+		pterm.LightMagenta(display.PadRight("状态", 8)),
+		pterm.Gray("│"),
+		statusColor(fmt.Sprintf("%d %s", r.StatusCode, httpStatusText(r.StatusCode)))))
+	pterm.Println(fmt.Sprintf("    %s%s  %s",
+		pterm.LightMagenta(display.PadRight("耗时", 8)),
+		pterm.Gray("│"),
+		pterm.LightCyan(r.ResponseTime.String())))
+	pterm.Println(fmt.Sprintf("    %s%s  %s",
+		pterm.LightMagenta(display.PadRight("保存", 8)),
+		pterm.Gray("│"),
+		pterm.LightWhite(r.SavedPath)))
+	if r.Compare.HasDiff {
+		changeColor := pterm.Red
+		if !r.Compare.StatusChanged {
+			changeColor = pterm.Yellow
+		}
+		pterm.Println(fmt.Sprintf("    %s%s  %s",
+			pterm.LightMagenta(display.PadRight("差异", 8)),
+			pterm.Gray("│"),
+			changeColor("有差异 (状态变化, 响应变化)")))
+	}
+	pterm.Println()
+}
+
+// PrintReplayDiff prints the diff between two responses.
+func (c *Console) PrintReplayDiff(diff replay.CompareResult) {
+	if !c.visible(1) {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	pterm.Println(pterm.Bold.Sprint("  响应差异:"))
+	pterm.Println(pterm.Gray(strings.Repeat("─", 75)))
+
+	if diff.StatusChanged {
+		pterm.Println(pterm.Red("  ⚠ 状态码发生变化"))
+	}
+	if diff.HeaderDiff != "" {
+		pterm.Println(pterm.Yellow("  响应头变化:"))
+		lines := strings.Split(strings.TrimSpace(diff.HeaderDiff), "\n")
+		for _, line := range lines {
+			pterm.Println("    " + pterm.Gray(line))
+		}
+	}
+	if diff.BodyChanged && c.verbose >= 1 {
+		pterm.Println(pterm.Yellow("  响应体变化:"))
+		lines := strings.Split(strings.TrimSpace(diff.BodyDiff), "\n")
+		for _, line := range lines {
+			if strings.HasPrefix(line, "-") {
+				pterm.Println("    " + pterm.Red(line))
+			} else if strings.HasPrefix(line, "+") {
+				pterm.Println("    " + pterm.Green(line))
+			} else {
+				pterm.Println("    " + pterm.Gray(line))
+			}
+		}
+	}
+	pterm.Println()
+}
+
+// PrintReplayRaw prints raw request/response content for debugging.
+func (c *Console) PrintReplayRaw(tag, raw string) {
+	if !c.visible(2) {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	color := tagColor(tag)
+	tagFmt := color("[" + tag + "]")
+	ts := pterm.Gray(timeStampMs())
+
+	pterm.Printf("%s %s %s\n", ts, tagFmt, tag)
+
+	// Separator
+	label := " REQUEST "
+	if tag == "响应" {
+		label = " RESPONSE "
+	}
+	labelLen := len(label)
+	dashTotal := 75 - labelLen
+	leftDash := dashTotal / 2
+	rightDash := dashTotal - leftDash
+	sep := pterm.Gray(strings.Repeat("─", leftDash)) +
+		pterm.Cyan(label) +
+		pterm.Gray(strings.Repeat("─", rightDash))
+	pterm.Println(sep)
+
+	// Raw content — no prefix, clean for copy-paste
+	cleanRaw := strings.ReplaceAll(raw, "\r\n", "\n")
+	cleanRaw = strings.TrimRight(cleanRaw, "\n")
+	for _, line := range strings.Split(cleanRaw, "\n") {
+		pterm.Println(line)
+	}
+	pterm.Println()
+}
+
+// httpStatusText returns the standard HTTP status text for a given code.
+func httpStatusText(code int) string {
+	switch code {
+	case 200:
+		return "OK"
+	case 201:
+		return "Created"
+	case 204:
+		return "No Content"
+	case 301:
+		return "Moved Permanently"
+	case 302:
+		return "Found"
+	case 304:
+		return "Not Modified"
+	case 400:
+		return "Bad Request"
+	case 401:
+		return "Unauthorized"
+	case 403:
+		return "Forbidden"
+	case 404:
+		return "Not Found"
+	case 500:
+		return "Internal Server Error"
+	case 502:
+		return "Bad Gateway"
+	case 503:
+		return "Service Unavailable"
+	default:
+		return ""
 	}
 }

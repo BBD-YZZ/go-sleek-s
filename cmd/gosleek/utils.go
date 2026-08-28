@@ -7,109 +7,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gosleek/gosleek/internal/display"
 	"github.com/pterm/pterm"
 )
-
-// ──────────────────────────────────────────────────────────────────────────
-// Display-width-aware helpers (mirrors internal/output/console.go logic)
-// ──────────────────────────────────────────────────────────────────────────
-
-// displayWidth returns the visual column width of s in a terminal,
-// accounting for ANSI escape sequences and CJK double-width runes.
-func displayWidth(s string) int {
-	var n int
-	inEsc := false
-	for _, r := range s {
-		if r == 0x1b {
-			inEsc = true
-			continue
-		}
-		if inEsc {
-			if r == 'm' {
-				inEsc = false
-			}
-			continue
-		}
-		n += runeDisplayWidth(r)
-	}
-	return n
-}
-
-func runeDisplayWidth(r rune) int {
-	if r == 0 || r < 0x20 {
-		return 0
-	}
-	switch {
-	case r >= 0x1100 && r <= 0x115F:
-		return 2
-	case r >= 0x2E80 && r <= 0x303E:
-		return 2
-	case r >= 0x3040 && r <= 0x33BF:
-		return 2
-	case r >= 0x3300 && r <= 0x33FF:
-		return 2
-	case r >= 0x3400 && r <= 0x9FFF:
-		return 2
-	case r >= 0xAC00 && r <= 0xD7AF:
-		return 2
-	case r >= 0xF900 && r <= 0xFAFF:
-		return 2
-	case r >= 0xFE10 && r <= 0xFE6F:
-		return 2
-	case r >= 0xFF01 && r <= 0xFF60:
-		return 2
-	case r >= 0xFFE0 && r <= 0xFFE6:
-		return 2
-	}
-	return 1
-}
-
-// stripAnsi strips ANSI escape sequences from s.
-func stripAnsi(s string) string {
-	var b strings.Builder
-	b.Grow(len(s))
-	inEsc := false
-	for _, r := range s {
-		if r == 0x1b {
-			inEsc = true
-			continue
-		}
-		if inEsc {
-			if r == 'm' {
-				inEsc = false
-			}
-			continue
-		}
-		b.WriteRune(r)
-	}
-	return b.String()
-}
-
-// padRight pads s with spaces to target display width n.
-func padRight(s string, n int) string {
-	w := displayWidth(s)
-	if w >= n {
-		return s
-	}
-	return s + strings.Repeat(" ", n-w)
-}
-
-// truncate shortens s to max display width, appending "…" if truncated.
-func truncate(s string, max int) string {
-	if displayWidth(s) <= max {
-		return s
-	}
-	runes := []rune(s)
-	w := 0
-	for i, r := range runes {
-		rw := runeDisplayWidth(r)
-		if w+rw > max-1 {
-			return string(runes[:i]) + "…"
-		}
-		w += rw
-	}
-	return string(runes) + "…"
-}
 
 // ──────────────────────────────────────────────────────────────────────────
 // Shared table renderer — CJK + ANSI aware column alignment
@@ -136,14 +36,14 @@ func PrintTable(title string, headers []string, colWidths []int, rows func() [][
 	// Compute column widths from headers and all rows
 	maxWidths := make([]int, len(headers))
 	for i, h := range headers {
-		maxWidths[i] = displayWidth(h)
+		maxWidths[i] = display.DisplayWidth(h)
 	}
 
 	// Collect all row data to compute widths
 	allRows := rows()
 	for _, row := range allRows {
 		for i, v := range row {
-			vw := displayWidth(v)
+			vw := display.DisplayWidth(v)
 			if i < len(maxWidths) && vw > maxWidths[i] {
 				maxWidths[i] = vw
 			}
@@ -179,7 +79,7 @@ func printTableRow(row []string, widths []int) {
 		if i > 0 {
 			sb.WriteString("  ")
 		}
-		vw := displayWidth(v)
+		vw := display.DisplayWidth(v)
 		if i < len(widths) && vw < widths[i] {
 			// pad to the right based on display width
 			sb.WriteString(v)
