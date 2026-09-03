@@ -1,0 +1,698 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Go-Sleek Web UI</title>
+<style>
+/* ─────────────────────────────────────────────────────────────
+   深色主题：与 CLI 保持一致的配色
+   ───────────────────────────────────────────────────────────── */
+:root {
+    --bg:          #0d1117;
+    --surface:     #161b22;
+    --border:      #30363d;
+    --text:        #e6edf3;
+    --text-dim:    #8b949e;
+    --accent:      #58a6ff;
+    --critical:    #da3633;
+    --high:        #f0883e;
+    --medium:      #d29922;
+    --low:         #58a6ff;
+    --info:        #8b949e;
+    --success:     #238636;
+    --danger:      #da3633;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* ── 顶部导航栏 ── */
+.navbar {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 0 24px;
+    height: 52px;
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+}
+.navbar .brand {
+    font-size: 16px;
+    font-weight: 700;
+    color: var(--accent);
+    letter-spacing: 0.5px;
+}
+.navbar .brand span { color: var(--text); font-weight: 400; }
+.navbar .addr {
+    margin-left: auto;
+    color: var(--text-dim);
+    font-size: 12px;
+    font-family: "SF Mono", "Fira Code", monospace;
+}
+
+/* ── 主容器 ── */
+.container {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 24px;
+}
+
+/* ── 统计卡片 ── */
+.stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 12px;
+    margin-bottom: 24px;
+}
+.stat-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 20px;
+    text-align: center;
+    transition: border-color 0.2s;
+}
+.stat-card:hover { border-color: var(--accent); }
+.stat-card .num {
+    font-size: 32px;
+    font-weight: 700;
+    line-height: 1;
+    margin-bottom: 4px;
+}
+.stat-card .label {
+    font-size: 12px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+.stat-card.critical .num { color: var(--critical); }
+.stat-card.high     .num { color: var(--high); }
+.stat-card.medium   .num { color: var(--medium); }
+.stat-card.low      .num { color: var(--low); }
+.stat-card.info     .num { color: var(--info); }
+
+/* ── 区块标题 ── */
+.section-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 12px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.section-title .dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--accent);
+    display: inline-block;
+}
+
+/* ── 任务列表 ── */
+.task-list {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    margin-bottom: 24px;
+}
+.task-row {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--border);
+}
+.task-row:last-child { border-bottom: none; }
+.task-row .task-id {
+    font-family: "SF Mono", "Fira Code", monospace;
+    font-size: 11px;
+    color: var(--text-dim);
+    min-width: 80px;
+}
+.task-row .task-name {
+    font-weight: 600;
+    flex: 1;
+}
+.task-row .task-targets {
+    color: var(--text-dim);
+    font-size: 12px;
+    flex: 1;
+}
+.status-badge {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 12px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+.status-badge.running  { background: rgba(35,134,54,0.2); color: #3fb950; }
+.status-badge.completed { background: rgba(88,166,255,0.2); color: #58a6ff; }
+.status-badge.stopped  { background: rgba(139,148,158,0.2); color: #8b949e; }
+
+/* ── 结果表格 ── */
+.results-table-wrap {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    margin-bottom: 24px;
+}
+.results-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+.results-table th {
+    background: var(--surface);
+    color: var(--text-dim);
+    font-weight: 600;
+    text-align: left;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+}
+.results-table th:hover { color: var(--accent); }
+.results-table td {
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+}
+.results-table tr:last-child td { border-bottom: none; }
+.results-table tr:hover td { background: rgba(88,166,255,0.04); }
+
+.severity-badge {
+    display: inline-block;
+    padding: 1px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+}
+.severity-badge.critical { background: rgba(218,54,51,0.2); color: #ff7b72; }
+.severity-badge.high     { background: rgba(240,136,62,0.2); color: #ffa657; }
+.severity-badge.medium   { background: rgba(210,153,34,0.2); color: #e3b341; }
+.severity-badge.low      { background: rgba(88,166,255,0.2); color: #79c0ff; }
+.severity-badge.info     { background: rgba(139,148,158,0.2); color: #8b949e; }
+
+/* ── 严重度饼图（纯 CSS 实现） ── */
+.chart-section {
+    display: grid;
+    grid-template-columns: 260px 1fr;
+    gap: 24px;
+    margin-bottom: 24px;
+    align-items: start;
+}
+.donut-wrap {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+}
+.donut {
+    width: 160px;
+    height: 160px;
+    border-radius: 50%;
+    /* 由 Go 模板动态注入 background conic-gradient */
+    position: relative;
+}
+.donut::after {
+    content: "";
+    position: absolute;
+    inset: 35px;
+    background: var(--surface);
+    border-radius: 50%;
+}
+.donut-center {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    z-index: 1;
+}
+.donut-center .total-num {
+    font-size: 28px;
+    font-weight: 700;
+    color: var(--text);
+    line-height: 1;
+}
+.donut-center .total-label {
+    font-size: 11px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+}
+.donut-legend {
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.legend-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+}
+.legend-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+.legend-item .legend-count {
+    margin-left: auto;
+    color: var(--text-dim);
+    font-family: monospace;
+}
+
+/* ── 空状态 ── */
+.empty-state {
+    text-align: center;
+    padding: 48px 24px;
+    color: var(--text-dim);
+}
+.empty-state .icon { font-size: 40px; margin-bottom: 12px; }
+.empty-state p { font-size: 13px; }
+
+/* ── 目标统计条 ── */
+.target-bar {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 20px;
+    margin-bottom: 24px;
+}
+.target-bar-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 8px;
+}
+.target-bar-item:last-child { margin-bottom: 0; }
+.target-bar-item .tb-target {
+    width: 280px;
+    font-family: "SF Mono", "Fira Code", monospace;
+    font-size: 12px;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+.target-bar-item .tb-bar-bg {
+    flex: 1;
+    height: 8px;
+    background: var(--border);
+    border-radius: 4px;
+    overflow: hidden;
+}
+.target-bar-item .tb-bar-fill {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 4px;
+    transition: width 0.3s;
+}
+.target-bar-item .tb-count {
+    font-size: 12px;
+    color: var(--text-dim);
+    min-width: 30px;
+    text-align: right;
+    flex-shrink: 0;
+}
+
+/* ── SSE 实时状态指示器 ── */
+.live-dot {
+    display: inline-block;
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: #8b949e;
+    margin-right: 6px;
+    transition: background 0.3s;
+}
+.live-dot.live { background: #3fb950; animation: pulse 1.5s infinite; }
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+}
+@media (max-width: 768px) {
+    .chart-section { grid-template-columns: 1fr; }
+    .stats-grid { grid-template-columns: repeat(3, 1fr); }
+    .results-table { font-size: 12px; }
+    .results-table th, .results-table td { padding: 6px 8px; }
+}
+</style>
+</head>
+<body>
+
+<!-- ── 顶部导航 ── -->
+<nav class="navbar">
+    <div class="brand">go-sleek <span>Web UI</span></div>
+    <div class="addr">{{.ServerAddr}}</div>
+</nav>
+
+<div class="container">
+
+    <!-- ── 统计卡片 ── -->
+    <div class="stats-grid">
+        <div class="stat-card">
+            <div class="num">{{.Total}}</div>
+            <div class="label">总漏洞数</div>
+        </div>
+        <div class="stat-card critical">
+            <div class="num">{{.Critical}}</div>
+            <div class="label">严重</div>
+        </div>
+        <div class="stat-card high">
+            <div class="num">{{.High}}</div>
+            <div class="label">高危</div>
+        </div>
+        <div class="stat-card medium">
+            <div class="num">{{.Medium}}</div>
+            <div class="label">中危</div>
+        </div>
+        <div class="stat-card low">
+            <div class="num">{{.Low}}</div>
+            <div class="label">低危</div>
+        </div>
+        <div class="stat-card info">
+            <div class="num">{{.Info}}</div>
+            <div class="label">信息</div>
+        </div>
+        {{if gt .DedupCount 0}}
+        <div class="stat-card" style="border-color:var(--medium)">
+            <div class="num" style="color:var(--medium)">{{.DedupCount}}</div>
+            <div class="label">去重跳过</div>
+        </div>
+        {{end}}
+    </div>
+
+    <!-- ── 图表 + 目标统计 ── -->
+    <div class="chart-section">
+        <!-- 饼图 -->
+        <div class="donut-wrap">
+            <div class="donut" style="background: conic-gradient(
+                var(--critical) 0deg   {{.CriticalPct}}deg,
+                var(--high)     {{.CriticalPct}}deg {{.CriticalHighPct}}deg,
+                var(--medium)   {{.CriticalHighPct}}deg {{.MediumPct}}deg,
+                var(--low)      {{.MediumPct}}deg   {{.LowPct}}deg,
+                var(--info)     {{.LowPct}}deg      360deg
+            );"></div>
+            <div class="donut-legend">
+                <div class="legend-item">
+                    <span class="legend-dot" style="background:var(--critical)"></span>
+                    <span>严重</span>
+                    <span class="legend-count">{{.Critical}}</span>
+                </div>
+                <div class="legend-item">
+                    <span class="legend-dot" style="background:var(--high)"></span>
+                    <span>高危</span>
+                    <span class="legend-count">{{.High}}</span>
+                </div>
+                <div class="legend-item">
+                    <span class="legend-dot" style="background:var(--medium)"></span>
+                    <span>中危</span>
+                    <span class="legend-count">{{.Medium}}</span>
+                </div>
+                <div class="legend-item">
+                    <span class="legend-dot" style="background:var(--low)"></span>
+                    <span>低危</span>
+                    <span class="legend-count">{{.Low}}</span>
+                </div>
+                <div class="legend-item">
+                    <span class="legend-dot" style="background:var(--info)"></span>
+                    <span>信息</span>
+                    <span class="legend-count">{{.Info}}</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- 目标统计条 -->
+        <div>
+            <div class="section-title"><span class="dot"></span>目标漏洞分布</div>
+            <div class="target-bar">
+                {{if .TargetStats}}
+                {{range .TargetStats}}
+                <div class="target-bar-item">
+                    <span class="tb-target" title="{{.Target}}">{{.Target}}</span>
+                    <div class="tb-bar-bg">
+                        <div class="tb-bar-fill" style="width:{{.BarPct}}%"></div>
+                    </div>
+                    <span class="tb-count">{{.Count}}</span>
+                </div>
+                {{end}}
+                {{else}}
+                <div class="empty-state" style="padding:24px">
+                    <p>暂无目标数据</p>
+                </div>
+                {{end}}
+            </div>
+        </div>
+    </div>
+
+    <!-- ── 任务列表 ── -->
+    <div class="section-title"><span class="dot"></span><span class="live-dot" id="live-dot"></span>扫描任务
+        <span style="font-weight:400;font-size:12px;color:var(--text-dim);margin-left:4px">
+            运行中 {{.Running}} · 已完成 {{.Completed}} · 已停止 {{.Stopped}}
+        </span>
+    </div>
+    <div class="task-list">
+        {{if .Tasks}}
+        {{range .Tasks}}
+        <div class="task-row">
+            <span class="task-id">{{.ID}}</span>
+            <span class="task-name">{{.Name}}</span>
+            <span class="task-targets">{{range $i, $t := .Targets}}{{if $i}}, {{end}}{{$t}}{{end}}</span>
+            <span class="task-targets" style="flex:0">模板 {{len .Templates}} 个</span>
+            <span class="task-targets" style="flex:0">结果 {{len .Results}} 个</span>
+            <span class="status-badge {{.Status}}">
+                {{if eq .Status "running"}}运行中{{else if eq .Status "completed"}}已完成{{else}}已停止{{end}}
+            </span>
+        </div>
+        {{end}}
+        {{else}}
+        <div class="empty-state">
+            <div class="icon">📋</div>
+            <p>暂无扫描任务</p>
+        </div>
+        {{end}}
+    </div>
+
+    <!-- ── 结果表格 ── -->
+    <div class="section-title"><span class="dot"></span>检测结果
+        <span style="font-weight:400;font-size:12px;color:var(--text-dim);margin-left:4px">
+            共 {{.Total}} 条
+            {{if gt .DedupCount 0}} · 去重跳过 {{.DedupCount}} 条{{end}}
+        </span>
+    </div>
+    <div class="results-table-wrap">
+        <table class="results-table">
+            <thead>
+                <tr>
+                    <th>严重度</th>
+                    <th>名称</th>
+                    <th>目标</th>
+                    <th>匹配点</th>
+                    <th>时间</th>
+                    <th>证据</th>
+                </tr>
+            </thead>
+            <tbody>
+                {{range .Results}}
+                <tr>
+                    <td>
+                        <span class="severity-badge {{.Severity}}">{{.Severity | toUpper}}</span>
+                    </td>
+                    <td>
+                        <div style="font-weight:600">{{.Name}}</div>
+                        <div style="font-size:11px;color:var(--text-dim);margin-top:2px">{{.TemplateID}}</div>
+                    </td>
+                    <td>
+                        <span style="font-family:monospace;font-size:12px">{{.Target}}</span>
+                    </td>
+                    <td style="font-size:12px;color:var(--text-dim)">{{.MatchedAt}}</td>
+                    <td style="font-size:12px;color:var(--text-dim)">{{.Timestamp.Format "01-02 15:04:05"}}</td>
+                    <td style="max-width:300px">
+                        <span style="font-size:12px;font-family:monospace;color:var(--text-dim)">
+                            {{.Evidence | truncate 80}}
+                        </span>
+                    </td>
+                </tr>
+                {{else}}
+                <tr>
+                    <td colspan="6">
+                        <div class="empty-state">
+                            <div class="icon">🔍</div>
+                            <p>暂无检测结果</p>
+                        </div>
+                    </td>
+                </tr>
+                {{end}}
+            </tbody>
+        </table>
+    </div>
+
+</div>
+
+<!-- 自动更新脚本（SSE 实时推送 + 定时轮询兜底） -->
+<script>
+(function() {
+    var statsTimer = null;
+    var resultCount = 0;
+
+    // SSE 实时推送
+    var es = null;
+    function connectSSE() {
+        es = new EventSource('/api/events');
+        es.addEventListener('connected', function(e) {
+            var dot = document.getElementById('live-dot');
+            if (dot) dot.classList.add('live');
+        });
+        es.addEventListener('result', function(e) {
+            try {
+                var r = JSON.parse(e.data);
+                resultCount++;
+                updateStatCounters();
+                appendResultRow(r);
+                scrollToBottom();
+            } catch(err) {}
+        });
+        es.addEventListener('task', function(e) {
+            try {
+                var t = JSON.parse(e.data);
+                updateTaskStatus(t.task_id, t.status);
+            } catch(err) {}
+        });
+        es.onerror = function() {
+            var dot = document.getElementById('live-dot');
+            if (dot) dot.classList.remove('live');
+            // 断线重连
+            setTimeout(function() { connectSSE(); }, 3000);
+        };
+    }
+    connectSSE();
+
+    // 定时轮询兜底（每 10 秒刷新统计数据和任务列表）
+    function pollStats() {
+        fetch('/api/results/severity')
+            .then(function(r) { return r.json(); })
+            .then(function(d) { updateStatCounters(d); })
+            .catch(function(){});
+        fetch('/api/tasks')
+            .then(function(r) { return r.json(); })
+            .then(function(d) { updateTaskRows(d.tasks); })
+            .catch(function(){});
+    }
+    statsTimer = setInterval(pollStats, 10000);
+    pollStats(); // 立即执行一次
+
+    // 鼠标悬停时暂停 SSE 重连
+    document.addEventListener('mouseenter', function() {}, true);
+    document.addEventListener('mouseleave', function() {}, true);
+
+    function updateStatCounters(sev) {
+        var el = document.getElementById('stat-total');
+        if (el) {
+            el.textContent = resultCount;
+            if (sev) {
+                var cards = document.querySelectorAll('.stat-card .num');
+                if (cards[0]) cards[0].textContent = sev.critical + sev.high + sev.medium + sev.low + sev.info;
+                if (cards[1]) cards[1].textContent = sev.critical;
+                if (cards[2]) cards[2].textContent = sev.high;
+                if (cards[3]) cards[3].textContent = sev.medium;
+                if (cards[4]) cards[4].textContent = sev.low;
+                if (cards[5]) cards[5].textContent = sev.info;
+            }
+        }
+    }
+
+    function appendResultRow(r) {
+        var tbody = document.querySelector('.results-table tbody');
+        if (!tbody) return;
+        var tr = document.createElement('tr');
+        tr.innerHTML =
+            '<td><span class="severity-badge ' + r.severity + '">' + r.severity.toUpperCase() + '</span></td>' +
+            '<td><div style="font-weight:600">' + escHtml(r.name) + '</div><div style="font-size:11px;color:var(--text-dim);margin-top:2px">' + escHtml(r.template_id) + '</div></td>' +
+            '<td><span style="font-family:monospace;font-size:12px">' + escHtml(r.target) + '</span></td>' +
+            '<td style="font-size:12px;color:var(--text-dim)">' + escHtml(r.matched_at) + '</td>' +
+            '<td style="font-size:12px;color:var(--text-dim)">' + escHtml(r.timestamp) + '</td>' +
+            '<td style="max-width:300px"><span style="font-size:12px;font-family:monospace;color:var(--text-dim)">' + escHtml((r.evidence || '').substring(0, 80)) + '</span></td>';
+        tbody.appendChild(tr);
+        // 最多保留 200 行
+        while (tbody.children.length > 200) {
+            tbody.removeChild(tbody.firstChild);
+        }
+    }
+
+    function updateTaskRows(tasks) {
+        var list = document.querySelector('.task-list');
+        if (!list || !tasks) return;
+        var rows = list.querySelectorAll('.task-row');
+        if (rows.length !== tasks.length) {
+            list.innerHTML = '';
+            tasks.forEach(function(t) {
+                var row = document.createElement('div');
+                row.className = 'task-row';
+                var statusText = t.status === 'running' ? '运行中' : (t.status === 'completed' ? '已完成' : '已停止');
+                row.innerHTML =
+                    '<span class="task-id">' + escHtml(t.id) + '</span>' +
+                    '<span class="task-name">' + escHtml(t.name) + '</span>' +
+                    '<span class="task-targets" style="flex:1">' + t.targets.map(escHtml).join(', ') + '</span>' +
+                    '<span class="task-targets" style="flex:0">模板 ' + (t.templates ? t.templates.length : 0) + ' 个</span>' +
+                    '<span class="task-targets" style="flex:0">结果 ' + (t.results ? t.results.length : 0) + ' 个</span>' +
+                    '<span class="status-badge ' + t.status + '">' + statusText + '</span>';
+                list.appendChild(row);
+            });
+        }
+    }
+
+    function updateTaskStatus(taskId, status) {
+        var rows = document.querySelectorAll('.task-row');
+        rows.forEach(function(row) {
+            var idEl = row.querySelector('.task-id');
+            if (idEl && idEl.textContent === taskId) {
+                var badge = row.querySelector('.status-badge');
+                if (badge) {
+                    badge.className = 'status-badge ' + status;
+                    badge.textContent = status === 'running' ? '运行中' : (status === 'completed' ? '已完成' : '已停止');
+                }
+            }
+        });
+    }
+
+    function escHtml(s) {
+        return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    function scrollToBottom() {
+        var tbody = document.querySelector('.results-table tbody');
+        if (tbody) tbody.parentElement.scrollTop = tbody.parentElement.scrollHeight;
+    }
+})();
+</script>
+</body>
+</html>

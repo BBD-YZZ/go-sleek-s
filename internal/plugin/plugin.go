@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/gosleek/gosleek/internal/config"
 	"github.com/gosleek/gosleek/internal/httpclient"
 	"github.com/gosleek/gosleek/internal/placeholder"
 	"github.com/gosleek/gosleek/pkg/types"
@@ -38,6 +39,8 @@ type Context struct {
 	Log        Logger                   // 日志接口
 	Reporter   Reporter                 // 与 YAML 工作流对齐的结构化日志输出
 	Vars       map[string]string        // 跨请求共享变量（对标 workflow 的 extracted scope）
+	CookieJar  interface{}              // HTTP cookie jar（可选，由 engine 注入）
+	GlobalCfg  *config.GlobalConfig     // 全局配置（可选，由 engine 注入）
 }
 
 // Reporter 提供与 YAML 工作流一致的日志输出能力 (Burp-style 请求/响应包 + 匹配结果)。

@@ -10,6 +10,60 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// AIConfig holds AI provider configuration.
+type AIConfig struct {
+	Enabled         bool    `yaml:"enabled"`
+	Provider        string  `yaml:"provider"`
+	Model           string  `yaml:"model"`
+	BaseURL         string  `yaml:"base-url"`
+	APIKey          string  `yaml:"api-key"`
+	Timeout         int     `yaml:"timeout"`         // seconds
+	MinConfidence   float64 `yaml:"min-confidence"`  // 0.0-1.0, results below this are filtered
+	OpenAI  OpenAIConfig  `yaml:"openai"`
+	DeepSeek DeepSeekConfig `yaml:"deepseek"`
+	Kimi    KimiConfig    `yaml:"kimi"`
+	GLM     GLMConfig     `yaml:"glm"`
+	Ollama  OllamaConfig  `yaml:"ollama"`
+	Agnes   AgnesConfig   `yaml:"agnes"`
+	Azure   AzureConfig   `yaml:"azure"`
+}
+
+type OpenAIConfig struct {
+	BaseURL string `yaml:"base-url"`
+	Model   string `yaml:"model"`
+}
+
+type DeepSeekConfig struct {
+	BaseURL string `yaml:"base-url"`
+	Model   string `yaml:"model"`
+}
+
+type KimiConfig struct {
+	BaseURL string `yaml:"base-url"`
+	Model   string `yaml:"model"`
+}
+
+type GLMConfig struct {
+	BaseURL string `yaml:"base-url"`
+	Model   string `yaml:"model"`
+}
+
+type OllamaConfig struct {
+	BaseURL string `yaml:"base-url"`
+	Model   string `yaml:"model"`
+}
+
+type AgnesConfig struct {
+	BaseURL string `yaml:"base-url"`
+	Model   string `yaml:"model"`
+}
+
+type AzureConfig struct {
+	BaseURL    string `yaml:"base-url"`
+	APIKey     string `yaml:"api-key"`
+	Deployment string `yaml:"deployment"`
+}
+
 // GlobalConfig is the top-level configuration file (configs/config.yaml).
 type GlobalConfig struct {
 	// HTTP defaults
@@ -17,7 +71,7 @@ type GlobalConfig struct {
 	DefaultTimeout int    `yaml:"default-timeout"`
 	MaxRedirects   int    `yaml:"max-redirects"`
 	FollowRedirect bool   `yaml:"follow-redirects"` // false = never follow redirects
-	MaxBodySize    int64  `yaml:"max-body-size"` // max response body size in bytes (0 = unlimited)
+	MaxBodySize    int64  `yaml:"max-body-size"`    // max response body size in bytes (0 = unlimited)
 	AllowExternal  bool   `yaml:"allow-external-hosts"`
 
 	// Concurrency
@@ -33,6 +87,9 @@ type GlobalConfig struct {
 
 	// OOB
 	OOB OOBConfigYAML `yaml:"oob"`
+
+	// AI
+	AI AIConfig `yaml:"ai"`
 
 	// Templates
 	TemplateDir string `yaml:"template-dir"`
@@ -87,6 +144,19 @@ func DefaultConfig() *GlobalConfig {
 		TemplateDir:          "templates",
 		LogFile:              "logs/gosleek.log",
 		LogLevel:             "info",
+		AI: AIConfig{
+			Enabled:         false,
+			Provider:        "agnes",
+			Model:           "agnes-2.5-flash",
+			Timeout:         60,
+			MinConfidence:   0.0,
+			OpenAI:  OpenAIConfig{  BaseURL: "https://api.openai.com/v1",  Model: "gpt-4o-mini"},
+			DeepSeek: DeepSeekConfig{BaseURL: "https://api.deepseek.com/v1", Model: "deepseek-chat"},
+			Kimi:    KimiConfig{   BaseURL: "https://api.moonshot.cn/v1",  Model: "moonshot-v1-8k"},
+			GLM:     GLMConfig{    BaseURL: "https://open.bigmodel.cn/api/paas/v4", Model: "glm-4-plus"},
+			Ollama:  OllamaConfig{ BaseURL: "http://localhost:11434/api",  Model: "llama3"},
+			Agnes:   AgnesConfig{  BaseURL: "https://apihub.agnes-ai.com/v1", Model: "agnes-2.5-flash"},
+		},
 		OOB: OOBConfigYAML{
 			Enabled:  false,
 			Provider: "ceye",

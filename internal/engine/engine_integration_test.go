@@ -744,13 +744,6 @@ func TestSetGlobalHeaders2(t *testing.T) {
 	scanner.SetGlobalHeaders(map[string]string{"X-Test": "value"})
 }
 
-// TestSetFollowRedirects tests redirect configuration
-func TestSetFollowRedirects2(t *testing.T) {
-	cfg := &config.GlobalConfig{}
-	scanner := NewScanner(cfg, 0, OOBConfig{}, "", false)
-	scanner.SetFollowRedirects(false)
-	scanner.SetFollowRedirects(true)
-}
 
 // TestSetWordlistDir tests wordlist directory setting
 func TestSetWordlistDir2(t *testing.T) {

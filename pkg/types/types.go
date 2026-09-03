@@ -217,6 +217,16 @@ type Result struct {
 	// Raw request/response for replay
 	RawRequest  string `json:"raw-request,omitempty"`
 	RawResponse string `json:"raw-response,omitempty"`
+	// Redirect chain for replay and display
+	RedirectChain []RedirectInfo `json:"redirect-chain,omitempty"`
+}
+
+// RedirectInfo holds metadata about a single redirect hop.
+type RedirectInfo struct {
+	StatusCode int           `json:"status-code"`
+	Location   string        `json:"location"`
+	Raw        string        `json:"raw,omitempty"`
+	Time       string        `json:"time"`
 }
 
 // ScanOptions configures a scan run.

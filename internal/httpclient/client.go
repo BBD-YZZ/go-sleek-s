@@ -25,13 +25,25 @@ type RawRequest struct {
 	Body    string
 }
 
+// RedirectInfo holds metadata about a single redirect hop.
+// NOTE: The redirect chain is not currently captured by http.Client.Do()
+// because CheckRedirect only sees *http.Request, not responses.
+// To populate this field, manual redirect following is required.
+type RedirectInfo struct {
+	StatusCode int
+	Location   string
+	Raw        string
+	Time       time.Duration
+}
+
 // Response is a captured HTTP response with timing.
 type Response struct {
-	StatusCode int
-	Headers    map[string][]string
-	Body       string
-	Raw        string // full raw response for replay
-	Time       time.Duration // elapsed time
+	StatusCode    int
+	Headers       map[string][]string
+	Body          string
+	Raw           string // full raw response for replay
+	Time          time.Duration // elapsed time
+	RedirectChain []RedirectInfo // intermediate redirect responses (if any)
 }
 
 // Client wraps http.Client with retry, rate-limit, and connection pooling.
@@ -41,6 +53,7 @@ type Client struct {
 	maxRetries     int
 	backoff        time.Duration
 	userAgent      string
+	maxRedirects   int // 0 means no limit
 	followRedirect bool // default: follow up to MaxRedirects; false = never follow
 	maxBodySize    int64 // 0 = unlimited
 	allowExternal  bool // allow Host header to redirect to different hosts
@@ -95,15 +108,9 @@ func New(cfg ClientConfig) *Client {
 	}
 
 	checkRedirect := func(req *http.Request, via []*http.Request) error {
-		if len(via) >= cfg.MaxRedirects {
-			return http.ErrUseLastResponse
-		}
-		return nil
-	}
-	if cfg.MaxRedirects == 0 {
-		checkRedirect = func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		}
+		// Disable automatic redirect following. We follow redirects manually
+		// in doRequest to capture intermediate responses for the redirect chain.
+		return http.ErrUseLastResponse
 	}
 
 	limiter := ratelimit.New(cfg.RateLimit)
@@ -119,6 +126,7 @@ func New(cfg ClientConfig) *Client {
 		maxRetries:     cfg.MaxRetries,
 		backoff:        cfg.Backoff,
 		userAgent:      cfg.UserAgent,
+		maxRedirects:   cfg.MaxRedirects,
 		followRedirect: cfg.FollowRedirect,
 		maxBodySize:    cfg.MaxBodySize,
 		allowExternal:  cfg.AllowExternal,
@@ -246,6 +254,7 @@ func (c *Client) SendRaw(ctx context.Context, baseURL string, raw string) (*Resp
 }
 
 // SendParsed sends a parsed raw request to the given base URL.
+// It follows redirects and captures the redirect chain.
 func (c *Client) SendParsed(ctx context.Context, baseURL string, req *RawRequest) (*Response, error) {
 	// Inject config user-agent into raw request text so it appears in -vv output.
 	c.injectConfigUserAgent(req)
@@ -321,8 +330,13 @@ func (c *Client) doRequest(ctx context.Context, baseURL string, rawReq *RawReque
 		// Check if the raw request specifies a different Host
 		rawHost := getHeaderCI(rawReq.Headers, "Host")
 		if rawHost != "" {
+			// 尝试解析 baseURL 用于 SameTarget 比较
 			targetURL, err := url.Parse(baseURL)
-			if err == nil && !isSameTarget(rawHost, targetURL.Host) {
+			if err != nil {
+				// 解析失败时保守处理：仍拦截外部 Host
+				return nil, fmt.Errorf("SSRF防护: Host header指向外部主机 %s，已拒绝（使用 --allow-external-hosts 启用）", rawHost)
+			}
+			if !isSameTarget(rawHost, targetURL.Host) {
 				// Case 2: Host header points to a different server
 				// (e.g., ceye API verification step)
 				// SSRF protection: only allow external host redirect if explicitly enabled
@@ -403,23 +417,57 @@ func (c *Client) doRequest(ctx context.Context, baseURL string, rawReq *RawReque
 			Jar:       jar,
 		}
 	}
+
+	// Send the initial request. CheckRedirect always returns ErrUseLastResponse,
+	// so we receive the first redirect response (or final response) directly.
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return nil, err
 	}
+	elapsed := time.Since(start)
+
+	var redirectChain []RedirectInfo
+	// If this is a redirect, follow the chain and capture intermediate responses.
+	if isRedirect(resp.StatusCode) {
+		finalResp, chain := c.followRedirectChain(ctx, client, resp, c.maxRedirects)
+		resp = finalResp
+		// Build redirect chain info from captured responses.
+		for _, rr := range chain {
+			chainCT := rr.resp.Header.Get("Content-Type")
+			chainCE := rr.resp.Header.Get("Content-Encoding")
+			chainBody, chainCT := decompressBody(rr.body, chainCT, chainCE)
+			chainBody = fixEncoding(chainBody, chainCT)
+			chainRaw := buildRawResponse(rr.resp, chainBody, rr.elapsed)
+			location := rr.resp.Header.Get("Location")
+			if location == "" {
+				location = rr.resp.Request.URL.String()
+			}
+			redirectChain = append(redirectChain, RedirectInfo{
+				StatusCode: rr.resp.StatusCode,
+				Location:   location,
+				Raw:        chainRaw,
+				Time:       rr.elapsed,
+			})
+		}
+	}
 	defer resp.Body.Close()
 
-	bodyBytes, err := io.ReadAll(resp.Body)
+	// S3 fix: read at most maxBodySize bytes directly via LimitReader so we
+	// never load an oversized response into memory just to truncate it later.
+	// If maxBodySize is 0 (unlimited), fall back to full ReadAll.
+	var bodyBytes []byte
+	if c.maxBodySize > 0 {
+		bodyBytes, err = io.ReadAll(io.LimitReader(resp.Body, c.maxBodySize))
+	} else {
+		bodyBytes, err = io.ReadAll(resp.Body)
+	}
 	if err != nil {
 		return nil, err
 	}
-	// Check if body was truncated
+	// Drain remaining body to avoid connection reuse issues when truncated.
 	if c.maxBodySize > 0 && int64(len(bodyBytes)) >= c.maxBodySize {
-		bodyBytes = bodyBytes[:c.maxBodySize]
-		// Drain remaining body to avoid connection reuse issues
 		io.Copy(io.Discard, resp.Body)
 	}
-	elapsed := time.Since(start)
 
 	// Decompress body based on Content-Encoding header
 	contentType := resp.Header.Get("Content-Type")
@@ -439,11 +487,12 @@ func (c *Client) doRequest(ctx context.Context, baseURL string, rawReq *RawReque
 	raw := buildRawResponse(resp, bodyBytes, elapsed)
 
 	return &Response{
-		StatusCode: resp.StatusCode,
-		Headers:    headers,
-		Body:       string(bodyBytes),
-		Raw:        raw,
-		Time:       elapsed,
+		StatusCode:    resp.StatusCode,
+		Headers:       headers,
+		Body:          string(bodyBytes),
+		Raw:           raw,
+		Time:          elapsed,
+		RedirectChain: redirectChain,
 	}, nil
 }
 
@@ -460,6 +509,105 @@ func buildRawResponse(resp *http.Response, body []byte, elapsed time.Duration) s
 	sb.WriteString("\r\n")
 	sb.Write(body)
 	return sb.String()
+}
+
+// redirectEntry holds an intermediate redirect response and its metadata.
+type redirectEntry struct {
+	resp     *http.Response
+	body     []byte
+	elapsed  time.Duration
+	 Location string // resolved Location header
+}
+
+// followRedirectChain manually follows HTTP redirects, capturing each intermediate
+// response. Returns the final (non-redirect) response and the captured chain.
+// This is needed because http.Client.CheckRedirect cannot capture response bodies
+// — it only sees the *http.Request, not the *http.Response.
+//
+// C2 fix: read the body BEFORE closing it. The previous code called
+// io.Copy(io.Discard, body) + body.Close() first, then io.ReadAll(body)
+// on the closed body — which always returned empty bytes, so redirect-chain
+// evidence (intermediate bodies) was lost forever.
+//
+// C3 fix: do NOT reuse current.Request.Body for the next request — it has
+// already been consumed by the original Do() call. For non-303 redirects
+// that should preserve the body (e.g. 307/308), we buffer it via
+// GetBody when available; otherwise the redirect drops the body.
+func (c *Client) followRedirectChain(ctx context.Context, client *http.Client, firstResp *http.Response, maxRedirects int) (*http.Response, []redirectEntry) {
+	var chain []redirectEntry
+	current := firstResp
+	hops := 0
+
+	for isRedirect(current.StatusCode) && (maxRedirects == 0 || hops < maxRedirects) {
+		hops++
+		location := current.Header.Get("Location")
+		if location == "" {
+			// No Location header — treat as final response, break out.
+			break
+		}
+
+		// Resolve relative URLs.
+		reqURL := current.Request.URL
+		if reqURL == nil {
+			break
+		}
+		resolvedURL, err := reqURL.Parse(location)
+		if err != nil {
+			resolvedURL = reqURL
+		}
+
+		// C2 fix: read the intermediate body FIRST, then close.
+		bodyBytes, _ := io.ReadAll(io.LimitReader(current.Body, c.maxBodySize))
+		elapsed := time.Duration(0) // body already read, no timing available
+		chain = append(chain, redirectEntry{
+			resp:    current,
+			body:    bodyBytes,
+			elapsed: elapsed,
+		})
+		// Drain any remaining bytes (avoid connection reuse issues) then close.
+		io.Copy(io.Discard, current.Body)
+		current.Body.Close()
+
+		// C3 fix: prepare next request body. Never reuse current.Request.Body
+		// directly — it has been consumed. Prefer GetBody (cloned reader) when
+		// the original request exposes one; otherwise drop the body.
+		var method = current.Request.Method
+		var body io.Reader
+		if current.StatusCode == http.StatusSeeOther {
+			// 303 See Other: always switch to GET, drop body.
+			method = "GET"
+			body = nil
+		} else if current.Request.GetBody != nil {
+			// 307/308 (and some 301/302) should preserve method + body.
+			if rb, gerr := current.Request.GetBody(); gerr == nil {
+				body = rb
+			}
+		}
+
+		nextReq, err := http.NewRequestWithContext(ctx, method, resolvedURL.String(), body)
+		if err != nil {
+			break
+		}
+		// Copy headers from original request (except Host, which is set by URL).
+		for k, vs := range current.Request.Header {
+			if strings.EqualFold(k, "Host") {
+				continue
+			}
+			nextReq.Header[k] = vs
+		}
+		// Cookies are managed automatically by client.Jar when set; nothing to do here.
+
+		nextResp, err := client.Do(nextReq)
+		if err != nil {
+			// If we can't follow, return the last response we have.
+			return current, chain
+		}
+		current = nextResp
+	}
+
+	// Close the final response body — caller is responsible for closing it.
+	// We only close intermediate redirects here.
+	return current, chain
 }
 
 // getHeaderCI does a case-insensitive lookup in a map.
@@ -547,6 +695,25 @@ func (r *Response) GetHeader(key string) string {
 			if len(vs) > 0 {
 				return vs[0]
 			}
+		}
+	}
+	return ""
+}
+
+// GetCookie returns the value of a named cookie from Set-Cookie response headers.
+// Returns empty string if the cookie is not found.
+func (r *Response) GetCookie(name string) string {
+	cookieName := strings.ToLower(name)
+	for _, line := range strings.Split(r.GetHeader("Set-Cookie"), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(strings.ToLower(line), "set-cookie:") {
+			continue
+		}
+		cookieStr := strings.TrimSpace(strings.TrimPrefix(line, "set-cookie:"))
+		cookieStr = strings.SplitN(cookieStr, ";", 2)[0]
+		kv := strings.SplitN(cookieStr, "=", 2)
+		if len(kv) == 2 && strings.EqualFold(strings.TrimSpace(kv[0]), cookieName) {
+			return strings.TrimSpace(kv[1])
 		}
 	}
 	return ""

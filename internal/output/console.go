@@ -2,6 +2,8 @@ package output
 
 import (
 	"fmt"
+	"net/url"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -62,19 +64,29 @@ func tagColor(tag string) func(a ...interface{}) string {
 
 // ScanConfigInfo holds info for the pre-scan config panel.
 type ScanConfigInfo struct {
-	Targets      int
-	Templates    int
-	Plugins      int
-	Concurrency  int
-	RateLimit    int
-	Timeout      int
-	OOBEnabled   bool
-	OOBValid     bool // 是否正确配置
-	OOBDomain    string
-	OOBProvider  string // ceye / dnslog / callbackred
-	Proxy        string
-	OutputFile   string
-	OutputFormat string
+	Targets        int
+	Templates      int
+	Plugins        int
+	Concurrency    int
+	RateLimit      int
+	Timeout        int
+	MaxRetries     int
+	RetryBackoff   string
+	MaxRedirects   int
+	FollowRedirect bool
+	AllowExternal  bool
+	Insecure       bool // true = -k / 跳过 TLS 校验
+	MaxBodySize    int64
+	OOBEnabled     bool
+	OOBValid       bool // 是否正确配置
+	OOBDomain      string
+	OOBProvider    string // ceye / dnslog / callbackred
+	Proxy          string
+	OutputFile     string
+	OutputFormat   string
+	AIEnabled      bool
+	AIModel        string
+	LogFile        string
 }
 
 // Console handles terminal output with 3 verbosity levels.
@@ -88,6 +100,8 @@ type Console struct {
 	requests int64
 	matched  int64
 	failed   int64
+	// redact 控制是否脱敏输出（遮蔽证据中的敏感信息）
+	redact bool
 }
 
 // NewConsole creates a console output handler.
@@ -96,6 +110,38 @@ func NewConsole(verbose int) *Console {
 		verbose:   verbose,
 		startedAt: time.Now(),
 	}
+}
+
+// SetRedact enables/disables output redaction.
+func (c *Console) SetRedact(v bool) { c.redact = v }
+
+// redactSensitive replaces sensitive patterns in text with masked values.
+var sensitivePatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)(api[_-]?key|access[_-]?token|secret|password|auth[_-]?token)\s*[:=]\s*["']?([a-zA-Z0-9+/=_\-]{8,})["']?`),
+	regexp.MustCompile(`(?i)(Authorization)\s*:\s*Bearer\s+([a-zA-Z0-9._\-]+)`),
+	regexp.MustCompile(`(?i)(Bearer\s+)([a-zA-Z0-9._\-]{20,})`),
+	regexp.MustCompile(`(?i)(aws[_-]?secret[_-]?access[_-]?key)\s*[:=]\s*["']?([a-zA-Z0-9/+=]{40})["']?`),
+	regexp.MustCompile(`(?i)(x-api-key)\s*[:=]\s*["']?([a-zA-Z0-9._\-]{10,})["']?`),
+}
+
+func redactText(s string) string {
+	for _, re := range sensitivePatterns {
+		s = re.ReplaceAllStringFunc(s, func(match string) string {
+			// Preserve the key part, mask the value
+			if idx := strings.IndexAny(match, ":="); idx >= 0 {
+				keyPart := match[:idx+1]
+				return keyPart + "***REDACTED***"
+			}
+			return match[:len(match)-8] + "***REDACTED***"
+		})
+	}
+	return s
+}
+
+// RedactEvidence applies redaction to evidence strings.
+// Exported so cmd layer can use it when -redact is enabled.
+func RedactEvidence(s string) string {
+	return redactText(s)
 }
 
 // visible returns whether the configured verbosity meets the given minimum.
@@ -112,8 +158,8 @@ func (c *Console) visible(min int) bool {
 
 // contIndent is the number of spaces to indent continuation lines so they
 // align with the message column after "[timestamp]  [标签]  ".
-// timestamp = 25 chars, "  " = 2, "[标签]" = 6 display cols, "  " = 2 → 35
-const contIndent = "                                   "
+// timestamp = "[2006-01-02 15:04:05.000]" = 24 chars, "  " = 2, "[标签]" = 6 display cols, "  " = 2 → 34
+const contIndent = "                                    "
 
 // pLine prints a single "[timestamp]  [标签]  message" line.
 // All tags are 2 Chinese characters (4 display columns), no padding needed.
@@ -245,6 +291,8 @@ func (c *Console) PrintScanConfig(info ScanConfigInfo) {
 	if proxy == "" {
 		proxy = pterm.Gray("— 无")
 	}
+
+	// Build left column
 	type kv struct{ k, v string }
 	left := []kv{
 		{"目标数量", fmt.Sprintf("%d", info.Targets)},
@@ -263,15 +311,58 @@ func (c *Console) PrintScanConfig(info ScanConfigInfo) {
 		{"Go  插件", pluginVal},
 	}
 
-	// Compute fixed column widths: each column = key_width + 2(sep) + max_value_width
-	// This ensures right column always starts at the same position regardless of value length.
+	// Extra rows: retry, redirects, TLS, external hosts, body size
+	if info.MaxRetries > 0 || info.RetryBackoff != "" {
+		retryStr := fmt.Sprintf("重试 %d 次", info.MaxRetries)
+		if info.RetryBackoff != "" {
+			retryStr += " (退避 " + info.RetryBackoff + ")"
+		}
+		left = append(left, kv{"重试策略", retryStr})
+	}
+	redirectStr := "跟随"
+	if !info.FollowRedirect {
+		redirectStr = "不跟随"
+	}
+	if info.MaxRedirects > 0 {
+		redirectStr += fmt.Sprintf(" (最多 %d 次)", info.MaxRedirects)
+	}
+	left = append(left, kv{"重定向", redirectStr})
+
+	tlsStr := pterm.Gray("✓ 已校验")
+	if info.Insecure {
+		tlsStr = pterm.Red("⚠ 跳过校验 (-k)")
+	}
+	left = append(left, kv{"TLS 校验", tlsStr})
+
+	externalStr := pterm.Gray("禁止外部")
+	if info.AllowExternal {
+		externalStr = pterm.Green("允许外部")
+	}
+	left = append(left, kv{"外部主机", externalStr})
+
+	if info.MaxBodySize > 0 {
+		right = append(right, kv{"最大响应", fmt.Sprintf("%d MB", info.MaxBodySize/1024/1024)})
+	}
+
+	// Build right column (continued)
+	if info.AIEnabled {
+		aiModel := info.AIModel
+		if aiModel == "" {
+			aiModel = "默认"
+		}
+		right = append(right, kv{"AI 分析", pterm.Green("✓ 已启用") + " (" + aiModel + ")"})
+	}
+	if info.LogFile != "" {
+		right = append(right, kv{"日志文件", info.LogFile})
+	}
+
+	// Compute fixed column widths
 	maxLK := 0
 	maxLV := 0
 	for _, it := range left {
 		if w := display.DisplayWidth(it.k); w > maxLK {
 			maxLK = w
 		}
-		// For value width, strip ANSI to get plain text width
 		plainV := display.StripAnsi(it.v)
 		if w := display.DisplayWidth(plainV); w > maxLV {
 			maxLV = w
@@ -288,9 +379,7 @@ func (c *Console) PrintScanConfig(info ScanConfigInfo) {
 			maxRV = w
 		}
 	}
-	// Fixed column widths: key + sep(spaces+colon) + max_value
-	// seg format: "%s%s  %s" = key(maxLK) + colon(1) + 2spaces + value
-	sepW := 1 + 2 // ":" + "  "
+	sepW := 1 + 2
 	leftColW := maxLK + sepW + maxLV
 	rightColW := maxRK + sepW + maxRV
 
@@ -301,7 +390,6 @@ func (c *Console) PrintScanConfig(info ScanConfigInfo) {
 	}
 	for i := 0; i < rows; i++ {
 		var s strings.Builder
-		// Left pair — always padded to fixed leftColW
 		if i < len(left) {
 			it := left[i]
 			seg := fmt.Sprintf("%s%s  %s",
@@ -318,9 +406,7 @@ func (c *Console) PrintScanConfig(info ScanConfigInfo) {
 		} else {
 			s.WriteString(strings.Repeat(" ", 2+leftColW))
 		}
-		// Gap between columns
 		s.WriteString("  ")
-		// Right pair — always padded to fixed rightColW
 		if i < len(right) {
 			it := right[i]
 			seg := fmt.Sprintf("%s%s  %s",
@@ -336,8 +422,7 @@ func (c *Console) PrintScanConfig(info ScanConfigInfo) {
 	}
 	if info.OutputFile != "" {
 		lines = append(lines, "")
-		lines = append(lines, "  "+pterm.LightCyan("输出文件")+""+pterm.Gray(":")+"  "+
-			info.OutputFile+pterm.Gray("  · "+info.OutputFormat))
+		lines = append(lines, "  "+pterm.LightCyan("输出文件")+""+pterm.Gray("  · ")+info.OutputFormat+pterm.Gray("  →  ")+info.OutputFile)
 	}
 	c.printCard(pterm.LightCyan("▸")+"  扫描配置", pterm.LightCyan, lines, 75)
 }
@@ -546,19 +631,44 @@ func (c *Console) PrintResult(r *types.Result) {
 	body = append(body, "    "+pterm.Gray(strings.Repeat("·", 80)))
 	body = append(body, "")
 	body = append(body, resultKV("目标", r.Target))
+
+	// 从 RawRequest 提取漏洞路径、方法和 body，显示完整漏洞信息
+	if r.RawRequest != "" {
+		method, path, reqBody := parseRawRequest(r.RawRequest)
+		if path != "" {
+			vulnURL := buildVulnURL(r.Target, path)
+			if method != "" {
+				body = append(body, resultKV("路径", pterm.LightCyan(method+" "+vulnURL)))
+			} else {
+				body = append(body, resultKV("路径", pterm.LightCyan(vulnURL)))
+			}
+			// 如果有 body，显示 POST body 摘要
+			if reqBody != "" && (method == "POST" || method == "PUT" || method == "PATCH") {
+				bodySummary := truncateStr(reqBody, 60)
+				body = append(body, resultKV("Body", pterm.Gray(bodySummary)))
+			}
+		}
+	}
+
 	body = append(body, resultKV("模板", pterm.Cyan(r.TemplateID)))
 	if r.Description != "" {
 		desc := strings.Join(strings.Fields(r.Description), " ")
 		body = append(body, resultKV("描述", display.Truncate(desc, 80)))
 	}
 	if r.Evidence != "" {
-		body = append(body, resultKV("证据", pterm.LightWhite(display.Truncate(r.Evidence, 100))))
+		evidence := r.Evidence
+		if c.redact {
+			evidence = redactText(evidence)
+		}
+		body = append(body, resultKV("证据", pterm.LightWhite(display.Truncate(evidence, 100))))
 	}
 	if len(r.Extracted) > 0 {
 		var parts []string
 		for k, v := range r.Extracted {
 			parts = append(parts, fmt.Sprintf("%s=%s", k, display.Truncate(v, 40)))
 		}
+		// 提取值按 key 排序，确保输出稳定
+		sort.Strings(parts)
 		body = append(body, resultKV("提取", pterm.LightWhite(strings.Join(parts, ", "))))
 	}
 	if len(r.Tags) > 0 {
@@ -577,7 +687,107 @@ func (c *Console) PrintResult(r *types.Result) {
 	c.printCard("", sevColor, body, 90)
 }
 
-// ──────────────────────────────────────────────────────────────────────────
+// parseRawRequest parses a raw HTTP request and extracts method, path, and body.
+func parseRawRequest(raw string) (method, path, body string) {
+	firstLine := strings.SplitN(raw, "\r\n", 2)[0]
+	parts := strings.Fields(firstLine)
+	if len(parts) >= 2 {
+		method = parts[0]
+		path = parts[1]
+	}
+	// Extract body: everything after the blank line separator
+	sepIdx := strings.Index(raw, "\r\n\r\n")
+	if sepIdx >= 0 {
+		body = raw[sepIdx+4:]
+	}
+	return
+}
+
+// PrintAIResult prints AI analysis result for a matched vulnerability.
+func (c *Console) PrintAIResult(aiConfidence float64, aiConfident bool, aiRiskAssessment string, suggestions []string, result *types.Result) {
+	// 从 result.Extracted 读取 AI 扩展字段（由 engine 在分析时注入）
+	var evidence, exploit, impact, remediation string
+	if result != nil && result.Extracted != nil {
+		evidence = result.Extracted["ai_evidence"]
+		exploit = result.Extracted["ai_exploit"]
+		impact = result.Extracted["ai_impact"]
+		remediation = result.Extracted["ai_remediation"]
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	confPct := int(aiConfidence * 100)
+	sevColor := severityPColor(result.Severity)
+
+	pterm.Println()
+	pterm.Println(pterm.Bold.Sprint("  ◈ AI 辅助分析"))
+	pterm.Println(pterm.Gray(strings.Repeat("─", 75)))
+	pterm.Printf("  漏洞:    %s\n", sevColor(result.Name))
+	pterm.Printf("  目标:    %s\n", pterm.LightWhite(result.Target))
+	pterm.Printf("  模板:    %s\n", pterm.Cyan(result.TemplateID))
+	pterm.Printf("  置信度:  %d%%", confPct)
+	if aiConfident {
+		pterm.Printf("  %s\n", pterm.Green("✓ 已确认"))
+	} else {
+		pterm.Printf("  %s\n", pterm.Yellow("△ 待确认"))
+	}
+	pterm.Println()
+
+	if evidence != "" {
+		pterm.Printf("  证据:\n    %s\n", pterm.NewStyle(pterm.Italic).Sprint(pterm.Gray(display.Truncate(evidence, 120))))
+	}
+	if exploit != "" {
+		pterm.Printf("  PoC:     %s\n", pterm.Yellow(exploit))
+	}
+	if impact != "" {
+		pterm.Printf("  影响:    %s\n", pterm.Red(impact))
+	}
+	if remediation != "" {
+		pterm.Printf("  修复:    %s\n", pterm.Green(remediation))
+	}
+	if aiRiskAssessment != "" {
+		pterm.Printf("  评估:    %s\n", pterm.White(display.Truncate(aiRiskAssessment, 120)))
+	}
+
+	if len(suggestions) > 0 {
+		pterm.Println()
+		pterm.Println("  建议:")
+		for _, s := range suggestions {
+			pterm.Printf("    • %s\n", pterm.Gray(display.Truncate(s, 80)))
+		}
+	}
+	pterm.Println(pterm.Gray(strings.Repeat("─", 75)))
+}
+
+// PrintAIFingerprint prints AI fingerprint recognition result.
+func (c *Console) PrintAIFingerprint(server, technology, cms, language, waf string, confidence float64, target string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	confPct := int(confidence * 100)
+
+	pterm.Println()
+	pterm.Println("  " + pterm.Bold.Sprint("◈ AI 指纹识别"))
+	pterm.Println("  " + pterm.Gray(strings.Repeat("─", 80)))
+	pterm.Printf("  目标:    %s\n", pterm.LightWhite(target))
+	if server != "" {
+		pterm.Printf("  Server:  %s\n", pterm.Cyan(server))
+	}
+	if cms != "" {
+		pterm.Printf("  CMS:     %s\n", pterm.Green(cms))
+	}
+	if language != "" {
+		pterm.Printf("  语言:    %s\n", pterm.Yellow(language))
+	}
+	if technology != "" {
+		pterm.Printf("  技术栈:  %s\n", pterm.Blue(technology))
+	}
+	if waf != "" && waf != "None" {
+		pterm.Printf("  WAF:     %s\n", pterm.Red(waf))
+	}
+	pterm.Printf("  置信度:  %d%%\n", confPct)
+	pterm.Println("  " + pterm.Gray(strings.Repeat("─", 80)))
+}
+
 // Scan end summary
 // ──────────────────────────────────────────────────────────────────────────
 
@@ -865,6 +1075,61 @@ func oobProviderLabel(provider, domain string) string {
 	default:
 		return provider
 	}
+}
+
+// parseRequestMethodPath extracts HTTP method and path from a raw request string.
+// Returns ("", "") if parsing fails.
+func parseRequestMethodPath(raw string) (method, path string) {
+	firstLine := strings.SplitN(raw, "\r\n", 2)[0]
+	parts := strings.Fields(firstLine)
+	if len(parts) >= 2 {
+		return parts[0], parts[1]
+	}
+	if len(parts) == 1 {
+		return parts[0], ""
+	}
+	return "", ""
+}
+
+// buildVulnURL constructs the full vulnerability URL from target base and request path.
+// Handles three cases:
+//   - Absolute URL in path (http://... or https://...) → use directly
+//   - Relative path starting with / → append to target base
+//   - Relative path without / → append to target base path
+func buildVulnURL(target, path string) string {
+	// If path is an absolute URL, return it directly
+	if strings.HasPrefix(path, "http://") || strings.HasPrefix(path, "https://") {
+		return path
+	}
+	// Parse the base target URL
+	base, err := url.Parse(target)
+	if err != nil {
+		return target + path
+	}
+	// If path starts with /, replace the path entirely
+	if strings.HasPrefix(path, "/") {
+		base.Path = path
+		base.RawQuery = ""
+		base.Fragment = ""
+		return base.String()
+	}
+	// Relative path without / - append to base path
+	if base.Path != "" && !strings.HasSuffix(base.Path, "/") {
+		base.Path = base.Path + "/" + path
+	} else {
+		base.Path = base.Path + path
+	}
+	base.RawQuery = ""
+	base.Fragment = ""
+	return base.String()
+}
+
+// truncateStr truncates s to max display width with ellipsis.
+func truncateStr(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max-3] + "..."
 }
 
 // ──────────────────────────────────────────────────────────────────────────

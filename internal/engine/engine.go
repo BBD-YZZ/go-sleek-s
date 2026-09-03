@@ -3,8 +3,11 @@ package engine
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/cookiejar"
 	"os"
 	"strings"
+	"net/url"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -17,6 +20,7 @@ import (
 	"github.com/gosleek/gosleek/internal/placeholder"
 	"github.com/gosleek/gosleek/internal/plugin"
 	"github.com/gosleek/gosleek/internal/workflow"
+	"github.com/gosleek/gosleek/internal/ai"
 	"github.com/gosleek/gosleek/pkg/types"
 	"github.com/pterm/pterm"
 )
@@ -65,12 +69,21 @@ type Scanner struct {
 	oobProviderCache sync.Map // map[string]oobpkg.Provider
 
 	// Global CLI options
-	globalHeaders   map[string]string // injected into every request
-	followRedirects bool              // true = always follow, false = never
-	wordlistDir     string            // base dir for wordlist files
+	globalHeaders map[string]string // injected into every request
+	wordlistDir   string            // base dir for wordlist files
 
-	// dedup: "target|templateID" → bool
+	// WebUI 任务 ID（由 cmd 层在扫描开始前设置）
+	taskID string
+
+	// dedup: "target|templateID" → bool (job-level: skip already-processed jobs)
 	dedup sync.Map
+
+	// resultDedup: "target|templateID|severity" → bool (result-level: skip duplicate reports)
+	// 防止相同模板+目标+严重度被重复报告（断点续扫场景）
+	resultDedup sync.Map
+
+	// Cookie jar for session persistence across requests.
+	cookieJar http.CookieJar
 
 	// A3: resume state injected by main.go before Run()
 	resumeState *ResumeState
@@ -87,10 +100,23 @@ type Scanner struct {
 
 	// callbacks
 	onResult   func(*types.Result)
+	onWebUIAdd func(*types.Result) // 可选：将结果推送给 Web UI（由 cmd 层注册）
 	onVerbose  func(format string, args ...interface{}) // -v level
 	onDebug    func(format string, args ...interface{}) // -vv level (调试 tag)
 	onRaw      func(tag, format string, args ...interface{}) // -vv level (匹配 tag)
 	onPacket   func(tag string, summary string, raw string)  // -vv level (请求/响应 Burp-style)
+
+	// AI 实时分析回调
+	aiProvider       ai.Provider // 可选：AI 提供商（nil 表示未启用）
+	aiConfidence     float64     // AI 确认的最小置信度阈值
+	aiAnalysisChan   chan *types.Result // 异步分析结果通道
+	aiWG             sync.WaitGroup // 等待所有 AI 分析 goroutine 完成
+	aiDone           chan struct{}  // 信号：所有 AI 分析已完成
+	onAIFingerprint  func(*ai.FingerprintResponse, string) // AI 指纹识别回调（可选）
+
+	// dedup stats
+	resultDedupCount int64 // 引擎结果去重计数
+	jobDedupCount    int64 // 任务去重计数
 }
 
 // NewScanner creates a scanner with the given config.
@@ -121,6 +147,7 @@ func NewScanner(cfg *config.GlobalConfig, verbose int, oob OOBConfig, proxy stri
 		oobLabel:     oob.Label,
 		oobDomain:    oob.CeyeDomain,
 		globalHeaders: make(map[string]string),
+		cookieJar:     mustCreateCookieJar(),
 	}
 }
 
@@ -129,11 +156,6 @@ func NewScanner(cfg *config.GlobalConfig, verbose int, oob OOBConfig, proxy stri
 func (s *Scanner) SetGlobalHeaders(h map[string]string) {
 	s.globalHeaders = h
 	s.client.SetGlobalHeaders(h)
-}
-
-// SetFollowRedirects controls whether redirects are followed globally.
-func (s *Scanner) SetFollowRedirects(follow bool) {
-	s.followRedirects = follow
 }
 
 // SetWordlistDir sets the base directory for resolving wordlist file paths.
@@ -212,6 +234,18 @@ type OOBConfig struct {
 	AllowExternal bool   // whether to allow Host header redirect to external hosts
 }
 
+// OnWebUIAdd sets the optional callback for pushing results to a Web UI server.
+func (s *Scanner) OnWebUIAdd(fn func(*types.Result)) {
+	s.onWebUIAdd = fn
+}
+
+// DedupStats returns (resultDedupCount, jobDedupCount).
+// resultDedupCount: 相同目标+模板+严重度去重的结果数。
+// jobDedupCount: 相同目标+模板（无论是否匹配）去重的任务数。
+func (s *Scanner) DedupStats() (resultDedupCount, jobDedupCount int64) {
+	return atomic.LoadInt64(&s.resultDedupCount), atomic.LoadInt64(&s.jobDedupCount)
+}
+
 // SetCallbacks registers result/progress/debug callbacks.
 func (s *Scanner) SetCallbacks(
 	onResult func(*types.Result),
@@ -227,6 +261,188 @@ func (s *Scanner) SetCallbacks(
 	s.onDebug = onDebug
 	s.onRaw = onRaw
 	s.onPacket = onPacket
+}
+
+// SetTaskID sets the WebUI task ID for result association.
+func (s *Scanner) SetTaskID(id string) { s.taskID = id }
+
+// SetAICallback 设置 AI 实时分析回调。
+// provider 为 AI 提供商实例（nil 表示不启用 AI 分析）。
+// minConfidence 为 AI 确认的最小置信度阈值（0.0-1.0），低于此值的结果不会推送给 onResult。
+// onAIResult 为 AI 分析结果回调（可选）。
+// onAIFingerprint 为 AI 指纹识别回调（可选）。
+func (s *Scanner) SetAICallback(provider ai.Provider, minConfidence float64,
+	onAIResult func(*ai.AnalyzeResponse, *types.Result),
+	onAIFingerprint func(*ai.FingerprintResponse, string)) {
+	s.aiProvider = provider
+	s.aiConfidence = minConfidence
+	if onAIResult != nil {
+		s.aiAnalysisChan = make(chan *types.Result, 64)
+		s.aiDone = make(chan struct{})
+		go s.aiAnalysisLoop(onAIResult)
+	}
+	s.onAIFingerprint = onAIFingerprint
+}
+
+// WaitForAI 等待所有 AI 分析完成，最多等待 timeout 秒。
+// 应在 Run() 返回后调用，确保 AI 分析结果已输出。
+func (s *Scanner) WaitForAI(timeoutSeconds int) {
+	if s.aiAnalysisChan == nil {
+		return
+	}
+	close(s.aiAnalysisChan) // 通知 aiAnalysisLoop 没有更多结果了
+	if timeoutSeconds <= 0 {
+		timeoutSeconds = 30
+	}
+	done := make(chan struct{})
+	go func() {
+		s.aiWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return
+	case <-time.After(time.Duration(timeoutSeconds) * time.Second):
+		// L2: the wait goroutine above will terminate naturally once the
+		// outstanding AI analysis goroutines finish (each has its own ctx
+		// timeout), so this is not a permanent leak — but we surface the
+		// timeout to the user so they know some AI verdicts may be missing.
+		if s.verbose >= 1 {
+			fmt.Println("AI 分析超时，跳过等待（部分结果可能缺少 AI 确认）")
+		}
+	}
+}
+
+// aiAnalysisLoop 在独立 goroutine 中执行 AI 异步分析。
+func (s *Scanner) aiAnalysisLoop(onAIResult func(*ai.AnalyzeResponse, *types.Result)) {
+	for r := range s.aiAnalysisChan {
+		s.aiWG.Add(1)
+		go func(result *types.Result) {
+			defer s.aiWG.Done()
+			if s.aiProvider == nil {
+				return
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Duration(s.cfg.AI.Timeout)*time.Second)
+			defer cancel()
+
+			req := &ai.AnalyzeRequest{
+				TemplateID:   result.TemplateID,
+				TemplateName: result.Name,
+				Severity:     result.Severity,
+				Target:       result.Target,
+				RawRequest:   result.RawRequest,
+				RawResponse:  result.RawResponse,
+				Evidence:     result.Evidence,
+				Extracted:    result.Extracted,
+				Context:      "AI 实时分析",
+			}
+
+			resp, err := s.aiProvider.Analyze(ctx, req)
+			if err != nil {
+				if s.verbose >= 1 && s.onDebug != nil {
+					s.onDebug("AI 分析失败: template=%s target=%s err=%v", result.TemplateID, result.Target, err)
+				}
+				// AI 分析失败时不丢弃结果，仍调用原始 onResult
+				if s.onResult != nil {
+					s.onResult(result)
+				}
+				if s.onWebUIAdd != nil {
+					s.onWebUIAdd(result)
+				}
+				return
+			}
+
+			if resp == nil {
+				if s.onResult != nil {
+					s.onResult(result)
+				}
+				if s.onWebUIAdd != nil {
+					s.onWebUIAdd(result)
+				}
+				return
+			}
+
+			confPct := int(resp.Confidence * 100)
+			if s.onVerbose != nil {
+				s.onVerbose("AI 分析: %s - %s  置信度=%d%%  确认=%v  建议=%d条",
+					result.TemplateID, result.Name, confPct, resp.Confident, len(resp.Suggestions))
+			}
+
+			// 将 AI 分析结果注入到 result.Extracted 中，供 PrintAIResult 展示
+			if result.Extracted == nil {
+				result.Extracted = make(map[string]string)
+			}
+			result.Extracted["ai_evidence"] = resp.Evidence
+			result.Extracted["ai_exploit"] = resp.Exploit
+			result.Extracted["ai_impact"] = resp.Impact
+			result.Extracted["ai_remediation"] = resp.Remediation
+
+			// 如果启用 AI 确认且置信度低于阈值，跳过结果
+			if s.aiConfidence > 0 && resp.Confidence < s.aiConfidence {
+				if s.verbose >= 1 && s.onDebug != nil {
+					s.onDebug("AI 置信度过低，跳过: %s (%.2f < %.2f)", result.TemplateID, resp.Confidence, s.aiConfidence)
+				}
+				if onAIResult != nil {
+					onAIResult(resp, result)
+				}
+				return
+			}
+
+			// AI 确认通过，推送结果
+			if s.onResult != nil {
+				s.onResult(result)
+			}
+			if s.onWebUIAdd != nil {
+				s.onWebUIAdd(result)
+			}
+			if onAIResult != nil {
+				onAIResult(resp, result)
+			}
+		}(r)
+	}
+}
+
+// aiFingerprintTargets 对目标列表进行 AI 指纹识别（扫描开始前）。
+// 仅对第一个目标做一次，避免重复请求。
+func (s *Scanner) aiFingerprintTargets(ctx context.Context, targets []string) {
+	if len(targets) == 0 || s.aiProvider == nil || s.onAIFingerprint == nil {
+		return
+	}
+	// 只对第一个目标做指纹识别（快速获取技术栈信息）
+	target := targets[0]
+	if s.verbose >= 1 {
+		s.verbosef("开始 AI 指纹识别: %s", target)
+	}
+	// 发送一个简单 GET 请求获取响应
+	host := target
+	if u, err := url.Parse(target); err == nil {
+		host = u.Host
+	}
+	rawReq := fmt.Sprintf("GET / HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", host)
+	resp, err := s.client.SendRaw(ctx, target, rawReq)
+	if err != nil {
+		if s.verbose >= 1 {
+			s.verbosef("AI 指纹识别失败: %v", err)
+		}
+		return
+	}
+	fpReq := &ai.FingerprintRequest{
+		Target:      target,
+		RawResponse: resp.Raw,
+	}
+	// 尝试调用指纹识别方法（仅 OpenAIProvider 支持）
+	if openaiProvider, ok := s.aiProvider.(*ai.OpenAIProvider); ok {
+		fpResp, err := openaiProvider.AnalyzeFingerprint(ctx, fpReq)
+		if err != nil {
+			if s.verbose >= 1 {
+				s.verbosef("AI 指纹分析失败: %v", err)
+			}
+			return
+		}
+		if fpResp != nil {
+			s.onAIFingerprint(fpResp, target)
+		}
+	}
 }
 
 // Run executes the scan with the given templates and plugins against targets.
@@ -249,8 +465,14 @@ func (s *Scanner) Run(ctx context.Context, templates []*types.Template, plugins 
 	}
 
 	// Initialize per-template OOB providers if needed
+	// C1 fix: guard against s.oobProvider == nil (probe may have failed above
+	// and set it to nil). Only compare names when global provider is non-nil.
+	globalProviderName := ""
+	if s.oobProvider != nil {
+		globalProviderName = s.oobProvider.Name()
+	}
 	for _, t := range templates {
-		if t.OOBProvider != "" && t.OOBProvider != s.oobProvider.Name() {
+		if t.OOBProvider != "" && t.OOBProvider != globalProviderName {
 			p := s.getOOBProvider(t)
 			if p != nil {
 				p.SetClient(s.client)
@@ -286,6 +508,11 @@ func (s *Scanner) Run(ctx context.Context, templates []*types.Template, plugins 
 		seenIDs[meta.ID] = "plugin"
 	}
 
+	// AI 指纹识别（扫描开始前对每个目标做一次快速指纹识别）
+	if s.aiProvider != nil && s.onAIFingerprint != nil && len(targets) > 0 {
+		s.aiFingerprintTargets(ctx, targets)
+	}
+
 	var allResults []*types.Result
 	resultsCh := make(chan *types.Result, 256)
 
@@ -296,8 +523,29 @@ func (s *Scanner) Run(ctx context.Context, templates []*types.Template, plugins 
 		defer collectorWG.Done()
 		for r := range resultsCh {
 			allResults = append(allResults, r)
-			if s.onResult != nil {
-				s.onResult(r)
+			if s.aiAnalysisChan != nil {
+				// AI 启用时：结果先发给 AI 分析，由 AI goroutine 决定是否输出
+				select {
+				case s.aiAnalysisChan <- r:
+				default:
+					// L3 fix: never silently drop results — that would cause
+					// under-reporting in the final report. When the AI queue
+					// is full, fall back to emitting the result directly so
+					// nothing is lost; the AI side simply skips this one.
+					if s.verbose >= 1 && s.onDebug != nil {
+						s.onDebug("AI 分析队列满，降级直出结果: template=%s", r.TemplateID)
+					}
+					if s.onResult != nil {
+						s.onResult(r)
+					}
+					if s.onWebUIAdd != nil {
+						s.onWebUIAdd(r)
+					}
+				}
+			} else {
+				if s.onResult != nil {
+					s.onResult(r)
+				}
 			}
 		}
 	}()
@@ -389,12 +637,14 @@ func (s *Scanner) runJob(ctx context.Context, job Job, results chan<- *types.Res
 	}
 
 	// 去重: 无论成功失败都标记为已处理
-	dedupKey := target + "|" + id
+	// 使用 ":::" 作为分隔符（URL 中极少出现），避免 "|" 出现在目标 URL 时冲突
+	dedupKey := target + ":::" + id
 	if _, exists := s.dedup.LoadOrStore(dedupKey, true); exists {
 		s.debug("跳过重复: %s vs %s", target, id)
 		if s.logger != nil {
 			s.logger.InfoKV("skip duplicate (already processed)", "target", target, "template", id)
 		}
+		atomic.AddInt64(&s.jobDedupCount, 1)
 		return
 	}
 
@@ -442,7 +692,13 @@ func (s *Scanner) runJob(ctx context.Context, job Job, results chan<- *types.Res
 		tmplProvider := s.getOOBProvider(job.Template)
 		// 检查模板所需的 provider 是否已初始化
 		if tmplProvider == nil || !s.isOOBProviderAvailable(tmplProvider) {
-			providerName := tmplProvider.Name()
+			// N1 fix: tmplProvider 可能为 nil，直接调用 .Name() 会 panic
+			var providerName string
+			if tmplProvider != nil {
+				providerName = tmplProvider.Name()
+			} else {
+				providerName = "none"
+			}
 			s.debug("跳过OOB%s(%s未配置): %s", oobKindName(job), providerName, id)
 			if s.logger != nil {
 				s.logger.InfoKV("skip OOB template", "provider", providerName, "template", id)
@@ -504,12 +760,25 @@ func (s *Scanner) runJob(ctx context.Context, job Job, results chan<- *types.Res
 	}
 
 	if result != nil {
-		atomic.AddInt64(&s.matched, 1)
-		results <- result
-		if s.logger != nil {
-			s.logger.InfoKV("matched",
-				"target", target, "template", id,
-				"severity", result.Severity, "evidence", result.Evidence)
+		// 结果级去重: 相同模板+目标+严重度只报告一次
+		resultKey := target + "|" + id + "|" + result.Severity
+		if _, loaded := s.resultDedup.LoadOrStore(resultKey, true); loaded {
+			if s.logger != nil {
+				s.logger.InfoKV("skip duplicate result",
+					"target", target, "template", id, "severity", result.Severity)
+			}
+			if s.verbose >= 2 && s.onDebug != nil {
+				s.onDebug("跳过重复结果: %s vs %s (severity=%s)", target, id, result.Severity)
+			}
+			atomic.AddInt64(&s.resultDedupCount, 1)
+		} else {
+			atomic.AddInt64(&s.matched, 1)
+			results <- result
+			if s.logger != nil {
+				s.logger.InfoKV("matched",
+					"target", target, "template", id,
+					"severity", result.Severity, "evidence", result.Evidence)
+			}
 		}
 	} else {
 		if s.logger != nil {
@@ -536,6 +805,8 @@ func (s *Scanner) executePlugin(ctx context.Context, p plugin.Plugin, target str
 		Eng:        eng,
 		Vars:       make(map[string]string),
 		Log:        &noopPluginLogger{id: p.Meta().ID}, // 始终提供 logger 防止 panic
+		CookieJar:  s.cookieJar,
+		GlobalCfg:  s.cfg,
 	}
 
 	if s.oobAvailable && s.oobProvider != nil {
@@ -555,7 +826,22 @@ func (s *Scanner) executePlugin(ctx context.Context, p plugin.Plugin, target str
 		s.onRaw,
 	)
 
+	// Call PreRun if the plugin implements it (e.g., for login, token extraction).
+	if preRunner, ok := p.(interface{ PreRun(context.Context, *plugin.Context) error }); ok {
+		if err := preRunner.PreRun(pluginCtx, pctx); err != nil {
+			s.debug("插件 PreRun 失败: %s → %v", p.Meta().ID, err)
+			return nil
+		}
+	}
+
 	result, err := p.Verify(pluginCtx, pctx)  // 使用带超时的 pluginCtx
+
+	// Call PostRun if the plugin implements it (e.g., for cleanup, logout).
+	// Always called, even if Verify returns an error.
+	if postRunner, ok := p.(interface{ PostRun(context.Context, *plugin.Context) }); ok {
+		postRunner.PostRun(pluginCtx, pctx)
+	}
+
 	if err != nil {
 		s.debug("插件执行错误: %s → %v", p.Meta().ID, err)
 		return nil
@@ -570,6 +856,7 @@ func (s *Scanner) executeHTTP(ctx context.Context, tmpl *types.Template, target 
 	allExtracted := make(map[string]string)
 	// Track the raw request/response for the first matching request
 	var lastRawReq, lastRawResp string
+	var lastRedirectChain []types.RedirectInfo
 
 	timeout := s.cfg.DefaultTimeout
 	if len(tmpl.HTTP) > 0 {
@@ -606,7 +893,7 @@ func (s *Scanner) executeHTTP(ctx context.Context, tmpl *types.Template, target 
 					if rangeReq == req.Raw {
 						// Placeholder not found, send original with placeholders resolved
 						rawReq := eng.ReplaceWithEscape(req.Raw)
-						s.sendRequest(ctx, tmpl, i, rawReq, reqTimeout, req.Redirects, allExtracted, eng, &reqResults, &reqEvidence, target, req.Extractors, req.Matchers, !req.Probe, &lastRawReq, &lastRawResp)
+						s.sendRequest(ctx, tmpl, i, rawReq, reqTimeout, req.Redirects, allExtracted, eng, &reqResults, &reqEvidence, target, req.Extractors, req.Matchers, !req.Probe, &lastRawReq, &lastRawResp, &lastRedirectChain)
 						break
 					}
 					// Apply Range first, then placeholder substitution
@@ -634,13 +921,13 @@ func (s *Scanner) executeHTTP(ctx context.Context, tmpl *types.Template, target 
 									lineReq = strings.ReplaceAll(lineReq, phKey, combo[j])
 								}
 							}
-							s.sendRequest(ctx, tmpl, i, lineReq, reqTimeout, req.Redirects, allExtracted, eng, &reqResults, &reqEvidence, target, req.Extractors, req.Matchers, !req.Probe, &lastRawReq, &lastRawResp)
+							s.sendRequest(ctx, tmpl, i, lineReq, reqTimeout, req.Redirects, allExtracted, eng, &reqResults, &reqEvidence, target, req.Extractors, req.Matchers, !req.Probe, &lastRawReq, &lastRawResp, &lastRedirectChain)
 						}
 						continue
 					}
 
 					// Probe requests with wordlists: extractors still run, but matcher results are ignored
-					s.sendRequest(ctx, tmpl, i, rawReq, reqTimeout, req.Redirects, allExtracted, eng, &reqResults, &reqEvidence, target, req.Extractors, req.Matchers, !req.Probe, &lastRawReq, &lastRawResp)
+					s.sendRequest(ctx, tmpl, i, rawReq, reqTimeout, req.Redirects, allExtracted, eng, &reqResults, &reqEvidence, target, req.Extractors, req.Matchers, !req.Probe, &lastRawReq, &lastRawResp, &lastRedirectChain)
 				}
 				continue
 			}
@@ -689,12 +976,12 @@ func (s *Scanner) executeHTTP(ctx context.Context, tmpl *types.Template, target 
 										lineReq = strings.ReplaceAll(lineReq, phKey, combo[j])
 									}
 								}
-								s.sendRequest(ctx, tmpl, i, lineReq, reqTimeout, req.Redirects, allExtracted, eng, &reqResults, &reqEvidence, target, req.Extractors, req.Matchers, !req.Probe, &lastRawReq, &lastRawResp)
+								s.sendRequest(ctx, tmpl, i, lineReq, reqTimeout, req.Redirects, allExtracted, eng, &reqResults, &reqEvidence, target, req.Extractors, req.Matchers, !req.Probe, &lastRawReq, &lastRawResp, &lastRedirectChain)
 							}
 							continue
 						}
 
-						s.sendRequest(ctx, tmpl, i, pathReq, reqTimeout, req.Redirects, allExtracted, eng, &reqResults, &reqEvidence, target, req.Extractors, req.Matchers, !req.Probe, &lastRawReq, &lastRawResp)
+						s.sendRequest(ctx, tmpl, i, pathReq, reqTimeout, req.Redirects, allExtracted, eng, &reqResults, &reqEvidence, target, req.Extractors, req.Matchers, !req.Probe, &lastRawReq, &lastRawResp, &lastRedirectChain)
 					}
 					continue
 				}
@@ -728,12 +1015,12 @@ func (s *Scanner) executeHTTP(ctx context.Context, tmpl *types.Template, target 
 						}
 					}
 					// Probe requests with wordlists: extractors still run, but matcher results are ignored
-					s.sendRequest(ctx, tmpl, i, lineReq, reqTimeout, req.Redirects, allExtracted, eng, &reqResults, &reqEvidence, target, req.Extractors, req.Matchers, !req.Probe, &lastRawReq, &lastRawResp)
+					s.sendRequest(ctx, tmpl, i, lineReq, reqTimeout, req.Redirects, allExtracted, eng, &reqResults, &reqEvidence, target, req.Extractors, req.Matchers, !req.Probe, &lastRawReq, &lastRawResp, &lastRedirectChain)
 				}
 				continue
 			}
 			// Probe requests with extractors still run, but matcher results are ignored
-			s.sendRequest(ctx, tmpl, i, rawReq, reqTimeout, req.Redirects, allExtracted, eng, &reqResults, &reqEvidence, target, req.Extractors, req.Matchers, !req.Probe, &lastRawReq, &lastRawResp)
+			s.sendRequest(ctx, tmpl, i, rawReq, reqTimeout, req.Redirects, allExtracted, eng, &reqResults, &reqEvidence, target, req.Extractors, req.Matchers, !req.Probe, &lastRawReq, &lastRawResp, &lastRedirectChain)
 		}
 	}
 
@@ -762,14 +1049,15 @@ func (s *Scanner) executeHTTP(ctx context.Context, tmpl *types.Template, target 
 		Extracted:   allExtracted,
 		RawRequest:  lastRawReq,
 		RawResponse: lastRawResp,
+		RedirectChain: lastRedirectChain,
 	}
 	return r
 }
 
 // sendRequest sends a single HTTP request and processes the response.
 // countResult: if false, matcher results are not added to reqResults (used for probe requests).
-// rawReqPtr/rawRespPtr: optional pointers to capture the last raw request/response for the matched request.
-func (s *Scanner) sendRequest(ctx context.Context, tmpl *types.Template, reqIdx int, rawReq string, reqTimeout int, redirects *bool, allExtracted map[string]string, eng *placeholder.Engine, reqResults *[]bool, evidence *[]string, target string, extractors []types.Extractor, matchers []types.Matcher, countResult bool, rawReqPtr, rawRespPtr *string) {
+// rawReqPtr/rawRespPtr/rawChainPtr: optional pointers to capture the last raw request/response/redirect-chain for the matched request.
+func (s *Scanner) sendRequest(ctx context.Context, tmpl *types.Template, reqIdx int, rawReq string, reqTimeout int, redirects *bool, allExtracted map[string]string, eng *placeholder.Engine, reqResults *[]bool, evidence *[]string, target string, extractors []types.Extractor, matchers []types.Matcher, countResult bool, rawReqPtr, rawRespPtr *string, rawChainPtr *[]types.RedirectInfo) {
 	s.logRequest(tmpl.ID, reqIdx, rawReq)
 
 	// Inject global headers into raw request text so they appear in -vv output
@@ -787,18 +1075,12 @@ func (s *Scanner) sendRequest(ctx context.Context, tmpl *types.Template, reqIdx 
 	}
 
 	reqCtx, cancel := context.WithTimeout(ctx, time.Duration(reqTimeout)*time.Second)
-	// A1: honor per-request redirects override via context.
-	// Also honor global --follow-redirects flag.
-	if s.followRedirects == false {
-		// Global: never follow
-		if redirects == nil || *redirects {
-			falseVal := false
-			reqCtx = context.WithValue(reqCtx, httpclient.ContextKeyFollowRedirects{}, falseVal)
-		}
-	}
+	// Per-request redirect override via context.
 	if redirects != nil {
 		reqCtx = context.WithValue(reqCtx, httpclient.ContextKeyFollowRedirects{}, *redirects)
 	}
+	// Inject shared cookie jar for session persistence across requests.
+	reqCtx = httpclient.SetCookieJar(reqCtx, s.cookieJar)
 	resp, err := s.client.SendParsed(reqCtx, target, parsed)
 	cancel()
 	if err != nil {
@@ -813,6 +1095,12 @@ func (s *Scanner) sendRequest(ctx context.Context, tmpl *types.Template, reqIdx 
 	if s.verbose >= 2 && s.onDebug != nil {
 		s.onDebug("响应: template=%s req[%d]  status=%d  time=%s  body=%d bytes",
 			tmpl.ID, reqIdx, resp.StatusCode, resp.Time.Round(time.Millisecond), len(resp.Body))
+		// 重定向链输出
+		if len(resp.RedirectChain) > 0 {
+			for i, rh := range resp.RedirectChain {
+				s.onDebug("  重定向[%d]: %d → %s", i, rh.StatusCode, rh.Location)
+			}
+		}
 		// 记录提取器变量
 		if len(extractors) > 0 {
 			var keys []string
@@ -870,6 +1158,16 @@ func (s *Scanner) sendRequest(ctx context.Context, tmpl *types.Template, reqIdx 
 			}
 			if rawRespPtr != nil && resp != nil {
 				*rawRespPtr = resp.Raw
+			}
+			// Capture redirect chain if present
+			if rawChainPtr != nil && resp != nil && len(resp.RedirectChain) > 0 {
+				for _, rh := range resp.RedirectChain {
+					*rawChainPtr = append(*rawChainPtr, types.RedirectInfo{
+						StatusCode: rh.StatusCode,
+						Location:   rh.Location,
+						Time:       rh.Time.String(),
+					})
+				}
 			}
 		}
 		if s.verbose >= 2 && s.onDebug != nil {
@@ -1021,6 +1319,24 @@ func (s *Scanner) GetCompleted() []string {
 	return pairs
 }
 
+// MarkResultDone 标记一个结果已报告（target|templateID|severity）。
+func (s *Scanner) MarkResultDone(target, templateID, severity string) {
+	key := target + "|" + templateID + "|" + severity
+	s.resultDedup.Store(key, true)
+}
+
+// ResultAlreadyReported 检查该结果是否已被报告过。
+func (s *Scanner) ResultAlreadyReported(target, templateID, severity string) bool {
+	key := target + "|" + templateID + "|" + severity
+	_, exists := s.resultDedup.Load(key)
+	return exists
+}
+
+// ClearResultDedup 清除结果去重缓存（用于新扫描批次）。
+func (s *Scanner) ClearResultDedup() {
+	s.resultDedup = sync.Map{}
+}
+
 // =============================================================================
 // Verbose helpers — centralise gating so the engine and workflow agree
 // =============================================================================
@@ -1050,8 +1366,8 @@ func (s *Scanner) logRequest(tmplID string, i int, raw string) {
 			"method", method, "path", path, "bytes", len(raw))
 	}
 
-	// -vv: Burp-style packet dump
-	if s.verbose >= 2 && s.onPacket != nil {
+	// -v+: Burp-style packet dump
+	if s.verbose >= 1 && s.onPacket != nil {
 		summary := fmt.Sprintf("%s req[%d]  %s %s  %d bytes", tmplID, i, method, path, len(raw))
 		s.onPacket("请求", summary, raw)
 	}
@@ -1068,8 +1384,8 @@ func (s *Scanner) logResponse(tmplID string, i int, status int, body string, raw
 			"status", status, "time_ms", elapsed.Milliseconds(), "bytes", len(body))
 	}
 
-	// -vv: Burp-style packet dump
-	if s.verbose >= 2 && s.onPacket != nil {
+	// -v+: Burp-style packet dump
+	if s.verbose >= 1 && s.onPacket != nil {
 		summary := fmt.Sprintf("%s req[%d]  status=%d  %s  %d bytes",
 			tmplID, i, status, elapsed.Round(time.Millisecond), len(body))
 		s.onPacket("响应", summary, raw)
@@ -1210,4 +1526,14 @@ func parseDuration(s string) time.Duration {
 		return 2 * time.Second
 	}
 	return d
+}
+
+// mustCreateCookieJar creates an RFC 6265-compliant cookie jar.
+// Panics on error — this should never happen with default options.
+func mustCreateCookieJar() http.CookieJar {
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		panic(fmt.Sprintf("failed to create cookie jar: %v", err))
+	}
+	return jar
 }

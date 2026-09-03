@@ -73,28 +73,48 @@ func (d *dnslogProvider) Probe(ctx context.Context) error {
 		d.onPacket("外带", "dnslog probe (获取子域名)", rawReq)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "GET", targetURL, nil)
-	if err != nil {
-		return err
-	}
-
-	var resp *http.Response
-	var httpErr error
+	// L7 fix: route through the shared httpclient.Client so global headers,
+	// rate limiting, and retry behaviour apply consistently. The previous
+	// path called http.Client.Do directly, bypassing all of that.
+	var cookieStr string
+	var bodyStr string
 	if d.client != nil {
-		resp, httpErr = d.client.HTTPClient().Do(req)
-	} else {
-		resp, httpErr = http.DefaultClient.Do(req)
-	}
-	if httpErr != nil {
-		if d.verbose >= 2 && d.onRaw != nil {
-			d.onRaw("外带", "dnslog probe failed: %v", httpErr)
+		resp, err := d.client.SendRaw(ctx, "http://47.244.138.18", rawReq)
+		if err != nil {
+			if d.verbose >= 2 && d.onRaw != nil {
+				d.onRaw("外带", "dnslog probe failed: %v", err)
+			}
+			return err
 		}
-		return httpErr
+		bodyStr = resp.Body
+		// Parse Set-Cookie from the captured headers.
+		cookieStr = resp.GetHeader("Set-Cookie")
+	} else {
+		// 无共享客户端时使用带超时的默认客户端
+		fallbackClient := &http.Client{Timeout: 15 * time.Second}
+		req, err := http.NewRequestWithContext(ctx, "GET", targetURL, nil)
+		if err != nil {
+			return err
+		}
+		resp, httpErr := fallbackClient.Do(req)
+		if httpErr != nil {
+			if d.verbose >= 2 && d.onRaw != nil {
+				d.onRaw("外带", "dnslog probe failed: %v", httpErr)
+			}
+			return httpErr
+		}
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
+		resp.Body.Close()
+		bodyStr = string(body)
+		for _, c := range resp.Cookies() {
+			if c.Name == "PHPSESSID" {
+				cookieStr = c.Value
+				break
+			}
+		}
 	}
-	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
-	rawDomain := strings.TrimSpace(string(body))
+	rawDomain := strings.TrimSpace(bodyStr)
 	if rawDomain == "" {
 		return fmt.Errorf("dnslog: empty domain response")
 	}
@@ -107,17 +127,35 @@ func (d *dnslogProvider) Probe(ctx context.Context) error {
 		d.label = rawDomain
 	}
 
-	// Extract PHPSESSID from Set-Cookie header
-	for _, c := range resp.Cookies() {
-		if c.Name == "PHPSESSID" {
-			d.cookie = c.Value
-			break
-		}
+	// Extract PHPSESSID. When coming from SendRaw we only have the raw header
+	// string; parse "PHPSESSID=xxx; ..." out of it.
+	if cookieStr != "" && d.cookie == "" {
+		d.cookie = extractCookieValue(cookieStr, "PHPSESSID")
 	}
 	if d.cookie == "" {
 		return fmt.Errorf("dnslog: no PHPSESSID cookie")
 	}
 	return nil
+}
+
+// extractCookieValue pulls a named cookie value out of a raw Set-Cookie /
+// Cookie header string ("name=value; attr=...; ...").
+func extractCookieValue(header, name string) string {
+	for _, part := range strings.Split(header, ";") {
+		part = strings.TrimSpace(part)
+		if idx := strings.Index(part, "="); idx > 0 {
+			k := strings.TrimSpace(part[:idx])
+			v := strings.TrimSpace(part[idx+1:])
+			// Strip leading "Set-Cookie:" prefix if present.
+			if strings.HasPrefix(strings.ToLower(k), "set-cookie:") {
+				k = strings.TrimSpace(k[len("Set-Cookie:"):])
+			}
+			if strings.EqualFold(k, name) {
+				return v
+			}
+		}
+	}
+	return ""
 }
 
 // VerifyDNS checks if any DNS callback was received.
@@ -154,7 +192,9 @@ func (d *dnslogProvider) getRecords(ctx context.Context) (bool, error) {
 	if d.client != nil {
 		resp, httpErr = d.client.HTTPClient().Do(req)
 	} else {
-		resp, httpErr = http.DefaultClient.Do(req)
+		// 无共享客户端时使用带超时的默认客户端
+		fallbackClient := &http.Client{Timeout: 15 * time.Second}
+		resp, httpErr = fallbackClient.Do(req)
 	}
 	if httpErr != nil {
 		if d.verbose >= 2 && d.onRaw != nil {

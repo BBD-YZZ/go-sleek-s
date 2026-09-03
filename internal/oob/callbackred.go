@@ -101,7 +101,9 @@ func (c *callbackRedProvider) Probe(ctx context.Context) error {
 	if c.client != nil {
 		resp, httpErr = c.client.HTTPClient().Do(req)
 	} else {
-		resp, httpErr = http.DefaultClient.Do(req)
+		// 无共享客户端时使用带超时的默认客户端
+		fallbackClient := &http.Client{Timeout: 15 * time.Second}
+		resp, httpErr = fallbackClient.Do(req)
 	}
 	if httpErr != nil {
 		if c.verbose >= 2 && c.onRaw != nil {

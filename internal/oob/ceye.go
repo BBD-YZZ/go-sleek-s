@@ -40,7 +40,7 @@ type ceyeProvider struct {
 func newCeyeProvider(token string) *ceyeProvider {
 	return &ceyeProvider{
 		token: token,
-		apiURL: "https://api.ceye.io",
+		apiURL: "http://api.ceye.io",  // ceye API 使用 HTTP，不是 HTTPS
 	}
 }
 
@@ -71,45 +71,133 @@ func (c *ceyeProvider) verifyRecords(ctx context.Context, recordType string) (bo
 	}
 
 	// apiBase is the scheme+host only (no path) — path comes from raw request
-	apiBase := "https://api.ceye.io"
+	// 默认使用 HTTP，因为 ceye API 不支持 HTTPS
+	apiBase := "http://api.ceye.io"
 	if c.apiURL != "" {
 		if u, err := parseURLNoPath(c.apiURL); err == nil {
 			apiBase = u
 		}
 	}
 
+	// C4 fix: derive the Host header from apiBase instead of hardcoding
+	// "api.ceye.io". When the user configures a self-hosted ceye mirror via
+	// api-url, the Host header must match the URL host; otherwise doRequest's
+	// "Host header points to external host" branch fires SSRF protection
+	// (allow-external=false) and every ceye API call fails.
+	apiHost := "api.ceye.io"
+	if u, err := url.Parse(apiBase); err == nil && u.Host != "" {
+		apiHost = u.Host
+	}
+
 	// Correct API format: token as query parameter, NO filter parameter.
 	// Get ALL records for this type, then filter client-side.
 	rawReq := fmt.Sprintf(
 		"GET /v1/records?token=%s&type=%s HTTP/1.1\r\n"+
-			"Host: api.ceye.io\r\n"+
+			"Host: %s\r\n"+
 			"User-Agent: gosleek/1.0\r\n"+
 			"Accept: */*\r\n"+
 			"Connection: close\r\n\r\n",
 		url.QueryEscape(c.token),
 		recordType,
+		apiHost,
 	)
 
 	if c.verbose >= 2 && c.onPacket != nil {
 		c.onPacket("外带", fmt.Sprintf("ceye %s query  label=%s type=%s", recordType, c.label, recordType), rawReq)
 	}
 
-	// Use configured pollTimeout (default 10s), not hardcoded
-	timeout := 10 * time.Second
+	// Build the ceye API poll timeout (default 10s from config.yaml).
+	// Add extra buffer for retries: MaxRetries=2 means up to 3 total calls
+	// with exponential backoff (2s + 4s = 6s overhead).
+	pollTimeout := 10 * time.Second
 	if c.pollTimeout != "" {
 		if d, err := time.ParseDuration(c.pollTimeout); err == nil && d > 0 {
-			timeout = d
+			pollTimeout = d
 		}
 	}
-	// Also respect the context deadline (don't exceed it)
-	if d, ok := ctx.Deadline(); ok {
-		if time.Until(d) < timeout {
-			timeout = time.Until(d)
-		}
+	// Ensure enough time for retries: SendParsed retries consume context time.
+	// Formula: pollTimeout × (MaxRetries+1) + sum(backoff delays)
+	// With MaxRetries=2, Backoff=2s: 10s×3 + 2s + 4s = 36s
+	// But we must also respect the parent context (pluginCtx) deadline.
+	// Set ceye timeout to min(totalTimeout, remaining pluginCtx time).
+	retryBuffer := 12 * time.Second
+	attemptTimeout := pollTimeout + retryBuffer/2
+	totalTimeout := attemptTimeout*3 + retryBuffer
+
+	// Check if parent context is already expired
+	if ctx.Err() != nil {
+		return false, ctx.Err()
 	}
 
-	ctxWithTimeout, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
+	// Calculate remaining time in parent context
+	deadline, hasDeadline := ctx.Deadline()
+	if !hasDeadline {
+		// No deadline in parent context, use our calculated timeout
+		ceyeTimeout := totalTimeout
+		// Log the computed timeout for debugging (visible at -v or higher).
+		if c.verbose >= 1 && c.onRaw != nil {
+			c.onRaw("外带", "ceye %s poll timeout: %v (no parent deadline, using calculated)", recordType, ceyeTimeout)
+		}
+		ceyeCtx, ceyeCancel := context.WithTimeout(context.Background(), ceyeTimeout)
+		defer ceyeCancel()
+
+		// Always use the shared client if available — same client as YAML workflow
+		var resp *httpclient.Response
+		var err error
+		if c.client != nil {
+			parsed, perr := httpclient.ParseRaw(rawReq)
+			if perr != nil {
+				return false, fmt.Errorf("ceye request parse failed: %w", perr)
+			}
+			resp, err = c.client.SendParsed(ceyeCtx, apiBase, parsed)
+		} else {
+			// Fallback: create a new client with generous timeout.
+			// Use apiBase (scheme+host) so the base URL matches the Host header
+			// derived above — avoids SSRF-protection false positives for mirrors.
+			resp, err = httpclient.New(httpclient.ClientConfig{
+				Timeout:        totalTimeout + 30*time.Second, // extra for dial + TLS
+				AllowExternal:  true,                         // ceye API is always external
+			}).SendRaw(ceyeCtx, apiBase, rawReq)
+		}
+
+		if err != nil {
+			if c.verbose >= 2 && c.onRaw != nil {
+				c.onRaw("外带", "ceye %s query failed: %v", recordType, err)
+			}
+			return false, fmt.Errorf("ceye API request failed: %w", err)
+		}
+
+		// Log response
+		if c.verbose >= 2 && c.onPacket != nil {
+			summary := fmt.Sprintf("ceye %s response  status=%d  %d bytes", recordType, resp.StatusCode, len(resp.Body))
+			c.onPacket("外带", summary, resp.Raw)
+		}
+
+		// Parse JSON and check for matches
+		return c.checkRecords(ctx, recordType, resp.Body)
+	}
+
+	// Calculate remaining time in parent context
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return false, fmt.Errorf("parent context already expired")
+	}
+
+	// Use the minimum of our calculated timeout and remaining time
+	ceyeTimeout := totalTimeout
+	if remaining < ceyeTimeout {
+		ceyeTimeout = remaining
+	}
+
+	// Log the computed timeout for debugging (visible at -v or higher).
+	if c.verbose >= 1 && c.onRaw != nil {
+		c.onRaw("外带", "ceye %s poll timeout: %v (calculated=%v, remaining=%v)", recordType, ceyeTimeout, totalTimeout, remaining)
+	}
+
+	// Create context from parent (pluginCtx) to respect plugin deadline.
+	// This ensures ceye calls are cancelled when the plugin times out.
+	ceyeCtx, ceyeCancel := context.WithTimeout(ctx, ceyeTimeout)
+	defer ceyeCancel()
 
 	// Always use the shared client if available — same client as YAML workflow
 	var resp *httpclient.Response
@@ -119,12 +207,15 @@ func (c *ceyeProvider) verifyRecords(ctx context.Context, recordType string) (bo
 		if perr != nil {
 			return false, fmt.Errorf("ceye request parse failed: %w", perr)
 		}
-		resp, err = c.client.SendParsed(ctxWithTimeout, apiBase, parsed)
+		resp, err = c.client.SendParsed(ceyeCtx, apiBase, parsed)
 	} else {
-		// Fallback: create a new client with generous timeout
+		// Fallback: create a new client with generous timeout.
+		// Use apiBase (scheme+host) so the base URL matches the Host header
+		// derived above — avoids SSRF-protection false positives for mirrors.
 		resp, err = httpclient.New(httpclient.ClientConfig{
-			Timeout: timeout + 30*time.Second, // extra for dial + TLS
-		}).SendRaw(ctxWithTimeout, "http://api.ceye.io", rawReq)
+			Timeout:        totalTimeout + 30*time.Second, // extra for dial + TLS
+			AllowExternal:  true,                         // ceye API is always external
+		}).SendRaw(ceyeCtx, apiBase, rawReq)
 	}
 
 	if err != nil {
@@ -140,6 +231,12 @@ func (c *ceyeProvider) verifyRecords(ctx context.Context, recordType string) (bo
 		c.onPacket("外带", summary, resp.Raw)
 	}
 
+	// Parse JSON and check for matches
+	return c.checkRecords(ctx, recordType, resp.Body)
+}
+
+// checkRecords parses ceye API response and checks for label match.
+func (c *ceyeProvider) checkRecords(ctx context.Context, recordType, body string) (bool, error) {
 	// Parse JSON: {"data":[{"name":"label.subdomain","type":"dns",...}]}
 	// Client-side filter: check if any record name contains our label
 	type ceyeRecord struct {
@@ -149,9 +246,9 @@ func (c *ceyeProvider) verifyRecords(ctx context.Context, recordType string) (bo
 	var result struct {
 		Data []ceyeRecord `json:"data"`
 	}
-	if err := json.Unmarshal([]byte(resp.Body), &result); err != nil {
+	if err := json.Unmarshal([]byte(body), &result); err != nil {
 		// If parsing fails, fall back to a simple string search
-		return len(resp.Body) > 0 && strings.Contains(resp.Body, `"name":`) && strings.Contains(strings.ToLower(resp.Body), strings.ToLower(c.label)), nil
+		return len(body) > 0 && strings.Contains(body, `"name":`) && strings.Contains(strings.ToLower(body), strings.ToLower(c.label)), nil
 	}
 
 	// Match: record name contains label (case-insensitive)

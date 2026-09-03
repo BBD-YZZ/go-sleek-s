@@ -4,7 +4,6 @@ gosleek-T*.exe
 
 # Build/cache / targets
 vendor/
-target/
 .cargo/
 go-build*/
 

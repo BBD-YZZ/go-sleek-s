@@ -1,0 +1,19 @@
+# SSRF endpoints
+http://127.0.0.1
+http://localhost
+http://169.254.169.254
+http://metadata.google.internal
+http://10.0.0.1
+http://192.168.0.1
+http://172.16.0.1
+file:///etc/passwd
+file:///etc/shadow
+gopher://127.0.0.1:6379/
+dict://127.0.0.1:11211/
+ftp://127.0.0.1
+http://[::1]
+http://0.0.0.0
+http://0.0.0.0:80
+http://0.0.0.0:443
+https://127.0.0.1
+https://localhost

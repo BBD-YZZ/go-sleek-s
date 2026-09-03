@@ -215,3 +215,32 @@ func TestMatches_FullPageWithMultipleTitles(t *testing.T) {
 		t.Error("should match second title")
 	}
 }
+
+// Test fingerprint matching for Spring Boot JSON error responses
+func TestMatches_SpringBootJSONError(t *testing.T) {
+	// Spring Boot returns JSON 404 with "Whitelabel error" not present
+	fp := makeFp([]string{}, map[string]string{}, "", `{"timestamp":"2026-09-03T02:08:59.002+00:00","path":"/","status":404,"error":"Not Found","message":null,"requestId":"eb444ca1-22"}`)
+	d := &Detector{}
+
+	// "Whitelabel error" rule should NOT match (Spring Boot JSON error doesn't contain it)
+	if d.Matches(fp, []types.FingerprintRule{{Body: "Whitelabel error"}}) {
+		t.Error("'Whitelabel error' should not match Spring Boot JSON 404")
+	}
+
+	// But "timestamp" + "Spring Boot" title SHOULD match (if title exists)
+	fpWithTitle := makeFp([]string{"Spring Boot"}, map[string]string{}, "", `{"timestamp":"..."}`)
+	if !d.Matches(fpWithTitle, []types.FingerprintRule{{Body: "timestamp", Title: "Spring Boot"}}) {
+		t.Error("timestamp + Spring Boot title should match")
+	}
+}
+
+// Test that blank rule fields don't cause false matches
+func TestMatches_EmptyRuleFields(t *testing.T) {
+	fp := makeFp([]string{}, map[string]string{"Server": "cloudflare"}, "cloudflare", "body")
+	d := &Detector{}
+
+	// Header key only (no value) — should match if key exists
+	if !d.Matches(fp, []types.FingerprintRule{{Header: []string{"Server"}}}) {
+		t.Error("header key-only check should match existing header")
+	}
+}

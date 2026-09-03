@@ -3,7 +3,7 @@
 
 # === HTTP 默认设置 ===
 user-agent: "Mozilla/5.0 (Windows NT 10.0; rv:109.0) Gecko/20100101 Firefox/115.0"
-default-timeout: 10  # 秒
+default-timeout: 30  # 秒
 max-redirects: 3
 max-body-size: 10485760  # 响应体最大字节数 (10MB, 0 = 无限制)
 allow-external-hosts: true  # 是否允许 Host 头重定向到外部主机（SSRF 防护开关，OOB 需要）
@@ -40,7 +40,7 @@ oob:
     domain: "lbwssd.ceye.io"            # 如 abc123.ceye.io
 
     # 可选: API 与轮询参数
-    api-url: "https://api.ceye.io/v1/records"
+    api-url: "http://api.ceye.io/v1/records"
     poll-interval: "2s"   # 轮询间隔
     poll-timeout: "10s"   # 最大等待时间
 
@@ -49,3 +49,38 @@ oob:
 
   # callback.red - 无需配置，自动获取 key
   callbackred: {}
+
+# === AI 辅助分析配置 ===
+# 优先级: 命令行参数 (--ai, --ai-provider 等) > 此配置文件
+ai:
+  enabled: true               # 是否启用 AI 实时分析（扫描过程中对命中结果进行 AI 验证）
+  provider: agnes              # AI 提供商: openai, deepseek, kimi, glm, ollama, agnes, azure
+  model: agnes-2.5-flash       # AI 模型名称
+  base-url: ""                 # API Base URL（为空时使用提供商默认值）
+  api-key: "sk-mZI4fAOIc6Ed4KV24bTCC2GtflXpforEDO1EMSMyjqbeKceO"                  # API Key（为空时尝试从环境变量读取）
+  timeout: 60                  # AI 请求超时秒数
+  min-confidence: 0.0          # 最小置信度（0.0-1.0），低于此值的 AI 分析结果会被过滤
+
+  # 各提供商默认配置（当 base-url/api-key/model 为空时使用）
+  openai:
+    base-url: "https://api.openai.com/v1"
+    model: "gpt-4o-mini"
+  deepseek:
+    base-url: "https://api.deepseek.com/v1"
+    model: "deepseek-chat"
+  kimi:
+    base-url: "https://api.moonshot.cn/v1"
+    model: "moonshot-v1-8k"
+  glm:
+    base-url: "https://open.bigmodel.cn/api/paas/v4"
+    model: "glm-4-plus"
+  ollama:
+    base-url: "http://localhost:11434/api"
+    model: "llama3"
+  agnes:
+    base-url: "https://apihub.agnes-ai.com/v1"
+    model: "agnes-2.5-flash"
+  azure:
+    base-url: ""               # 需要自行配置
+    api-key: ""
+    deployment: ""

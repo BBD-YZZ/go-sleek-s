@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"os"
 	"path/filepath"
 	"strings"
@@ -109,38 +108,6 @@ func findConfig() string {
 	return ""
 }
 
-func readTargetsFile(path string) ([]string, error) {
-	var targets []string
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		targets = append(targets, line)
-	}
-	return targets, scanner.Err()
-}
-
-func readTargetsStdin() ([]string, error) {
-	var targets []string
-	scanner := bufio.NewScanner(os.Stdin)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		targets = append(targets, line)
-	}
-	return targets, scanner.Err()
-}
-
 func parseHeaders(headers []string) map[string]string {
 	result := make(map[string]string)
 	for _, h := range headers {
@@ -158,4 +125,170 @@ func setupOutputDir(dir string) string {
 	}
 	timestamp := time.Now().Format("20060102-150405")
 	return filepath.Join(dir, "gosleek_"+timestamp)
+}
+
+// normalizeShortFlags maps short aliases to their long forms.
+// Go's flag package doesn't support short aliases, so we pre-process args.
+func normalizeShortFlags(args []string) []string {
+	result := make([]string, 0, len(args))
+	for i, arg := range args {
+		// Skip long flags and values
+		if strings.HasPrefix(arg, "--") {
+			result = append(result, arg)
+			continue
+		}
+		// Handle -X=value format
+		if strings.HasPrefix(arg, "-") && !strings.Contains(arg, " ") {
+			if eqIdx := strings.Index(arg, "="); eqIdx > 0 {
+				key := arg[1:eqIdx]
+				value := arg[eqIdx+1:]
+				switch key {
+				case "p":
+					result = append(result, "--proxy="+value)
+				case "a":
+					result = append(result, "--addr="+value)
+				case "c":
+					result = append(result, "--concurrency="+value)
+				case "r":
+					result = append(result, "--rate-limit="+value)
+				case "t":
+					result = append(result, "--target="+value)
+				case "l":
+					result = append(result, "--list="+value)
+				case "T":
+					result = append(result, "--templates="+value)
+				case "o":
+					result = append(result, "--output="+value)
+				case "f":
+					result = append(result, "--format="+value)
+				case "e":
+					result = append(result, "--exclude="+value)
+				case "k":
+					result = append(result, "--verify-ssl")
+				default:
+					result = append(result, arg)
+				}
+				continue
+			}
+			// Handle -X value format
+			switch arg {
+			case "-p":
+				result = append(result, "--proxy")
+				if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+					result = append(result, args[i+1])
+				}
+			case "-a":
+				result = append(result, "--addr")
+				if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+					result = append(result, args[i+1])
+				}
+			case "-c":
+				result = append(result, "--concurrency")
+				if i+1 < len(args) && isInt(args[i+1]) {
+					result = append(result, args[i+1])
+				}
+			case "-r":
+				result = append(result, "--rate-limit")
+				if i+1 < len(args) && isInt(args[i+1]) {
+					result = append(result, args[i+1])
+				}
+			case "-t":
+				result = append(result, "--target")
+				if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+					result = append(result, args[i+1])
+				}
+			case "-l":
+				result = append(result, "--list")
+				if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+					result = append(result, args[i+1])
+				}
+			case "-T":
+				result = append(result, "--templates")
+				if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+					result = append(result, args[i+1])
+				}
+			case "-o":
+				result = append(result, "--output")
+				if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+					result = append(result, args[i+1])
+				}
+			case "-f":
+				result = append(result, "--format")
+				if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+					result = append(result, args[i+1])
+				}
+			case "-e":
+				result = append(result, "--exclude")
+				if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+					result = append(result, args[i+1])
+				}
+			case "-k":
+				result = append(result, "--verify-ssl")
+			case "-H":
+				result = append(result, "--header")
+				if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+					result = append(result, args[i+1])
+				}
+			default:
+				result = append(result, arg)
+			}
+		} else {
+			result = append(result, arg)
+		}
+	}
+	return result
+}
+
+func isInt(s string) bool {
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return len(s) > 0
+}
+
+// listYAMLFiles recursively finds all .yaml/.yml files in a directory.
+func listYAMLFiles(dir string) ([]string, error) {
+	var files []string
+	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		if info.IsDir() {
+			return nil
+		}
+		ext := strings.ToLower(filepath.Ext(path))
+		if ext == ".yaml" || ext == ".yml" {
+			files = append(files, path)
+		}
+		return nil
+	})
+	return files, err
+}
+
+// typLabel returns a color-coded label for template/plugin type.
+func typLabel(typ string) string {
+	if typ == "Plugin" {
+		return pterm.Magenta(typ)
+	}
+	return pterm.Gray(typ)
+}
+
+// severityBadge returns a color-coded severity badge.
+func severityBadge(sev string) string {
+	switch strings.ToLower(sev) {
+	case "critical":
+		return pterm.Bold.Sprint(pterm.Red(sev))
+	case "high":
+		return pterm.Red(sev)
+	case "medium":
+		return pterm.Yellow(sev)
+	case "low":
+		return pterm.Cyan(sev)
+	case "info":
+		return pterm.Gray(sev)
+	default:
+		return pterm.White(sev)
+	}
 }

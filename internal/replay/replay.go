@@ -149,6 +149,9 @@ func (s *Session) buildClient() *httpclient.Client {
 
 // saveResponse writes the response to a file in the output directory.
 func (s *Session) saveResponse(r *Result) (string, error) {
+	if !s.Save {
+		return "", nil
+	}
 	timestamp := time.Now().Format("20060102-150405")
 	dir := s.OutputDir
 	if dir == "" {
@@ -163,7 +166,8 @@ func (s *Session) saveResponse(r *Result) (string, error) {
 	safeTarget = strings.ReplaceAll(safeTarget, "/", "_")
 	safeTarget = strings.ReplaceAll(safeTarget, ":", "_")
 	if len(safeTarget) > 50 {
-		safeTarget = safeTarget[:50]
+		// Use first 40 chars + last 10 chars to reduce collision
+		safeTarget = safeTarget[:40] + "_" + safeTarget[len(safeTarget)-10:]
 	}
 
 	// Status-code based filename
@@ -299,7 +303,16 @@ func diffStrings(old, newStr string) string {
 }
 
 // diffMap produces a simple diff between two header maps.
+// Headers that commonly change between requests (Response-Time, etc.) are ignored.
 func diffMap(old, newMap map[string][]string) string {
+	// Headers to ignore when comparing (commonly change between requests)
+	ignoreHeaders := map[string]bool{
+		"Response-Time": true,
+		"X-Response-Time": true,
+		"Date": true,
+		"Server": true,
+	}
+
 	var result strings.Builder
 	allKeys := make(map[string]bool)
 	for k := range old {
@@ -310,6 +323,10 @@ func diffMap(old, newMap map[string][]string) string {
 	}
 
 	for k := range allKeys {
+		// Skip ignored headers
+		if ignoreHeaders[k] {
+			continue
+		}
 		oldVals, oldOk := old[k]
 		newVals, newOk := newMap[k]
 		if !oldOk {
@@ -327,6 +344,16 @@ func diffMap(old, newMap map[string][]string) string {
 	}
 
 	return result.String()
+}
+
+// normalizeBody strips common variable fields from response body for comparison.
+// This helps reduce false positives in diff output.
+func normalizeBody(body string) string {
+	// Replace Response-Time header if present
+	normalized := strings.ReplaceAll(body, "\r\nResponse-Time: ", "\r\nX-Response-Time: <stripped>\r\n")
+	// Replace UUID-like patterns
+	normalized = strings.ReplaceAll(normalized, "\r\nX-Cf-Ray: ", "\r\nX-Cf-Ray: <stripped>\r\n")
+	return normalized
 }
 
 // httpStatusText returns the HTTP status text for a given code.

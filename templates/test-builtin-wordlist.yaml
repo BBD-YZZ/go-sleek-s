@@ -1,0 +1,33 @@
+# Test template for wordlist integration
+# Tests that built-in wordlist injection works correctly with --builtin flag
+#
+# 用法:
+#   # 直接运行（使用 wordlists/sqli.txt 中的 41 条 payload）
+#   ./gosleek scan -t http://target/ -id test-builtin-wordlist
+#
+#   # 使用 --builtin sqli 注入内置 SQLi 词表（33 条 payload，全量探测）
+#   ./gosleek scan -t http://target/ --builtin sqli
+
+id: test-builtin-wordlist
+name: "Built-in Wordlist Integration Test"
+severity: high
+tags: [test, builtin, wordlist]
+description: |
+  测试模板，用于验证 wordlist 注入机制。
+  使用 wordlists/sqli.txt 词表向 /test?id= 注入 SQLi payload。
+  也可配合 --builtin 参数使用。
+
+http:
+  - name: "test-builtin-sqli"
+    method: GET
+    path:
+      - "/test?id={{payload}}"
+    headers:
+      User-Agent: Mozilla/5.0 (Test)
+    wordlist:
+      - key: payload
+        path: wordlists/sqli.txt
+    matchers-condition: or
+    matchers:
+      - type: status
+        status: [200]
