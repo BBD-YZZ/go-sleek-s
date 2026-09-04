@@ -97,7 +97,16 @@ func NewLogger(logFile string, level string, verbose int) *Logger {
 }
 
 // SetMinLevel adjusts console verbosity at runtime.
-func (l *Logger) SetMinLevel(level slog.Level) { l.level.Set(level) }
+func (l *Logger) SetMinLevel(level int) {
+	switch level {
+	case 2:
+		l.level.Set(slog.LevelDebug)
+	case 1:
+		l.level.Set(slog.LevelInfo)
+	default:
+		l.level.Set(slog.LevelWarn)
+	}
+}
 
 // ──────────────────────────────────────────────────────────────────────────
 // ptermHandler — render slog records as colored pterm lines

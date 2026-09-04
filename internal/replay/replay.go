@@ -1,5 +1,3 @@
-// Package replay provides HTTP request replay functionality with response
-// comparison support.
 package replay
 
 import (
@@ -11,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gosleek/gosleek/internal/httpclient"
+	"github.com/gosleek/gosleek/internal/logutil"
 )
 
 // Session represents a single replay operation: one request sent, one response
@@ -70,6 +69,7 @@ func (s *Session) Run(ctx context.Context) (*Result, error) {
 	if err != nil {
 		return nil, fmt.Errorf("读取请求文件失败: %w", err)
 	}
+	logutil.Log("info", "回放", "读取请求文件: %s (%d bytes)", s.RequestFile, len(rawReq))
 	s.RequestRaw = rawReq
 
 	// Inject global headers (User-Agent from config)
@@ -86,6 +86,7 @@ func (s *Session) Run(ctx context.Context) (*Result, error) {
 	if err != nil {
 		return nil, fmt.Errorf("发送请求失败: %w", err)
 	}
+	logutil.Log("info", "回放", "请求完成: target=%s status=%d time=%s body=%d bytes", s.BaseURL, resp.StatusCode, resp.Time, len(resp.Body))
 
 	// Build result
 	result := &Result{

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gosleek/gosleek/internal/httpclient"
+	"github.com/gosleek/gosleek/internal/logutil"
 )
 
 // dnslogProvider implements Provider for 47.244.138.18 (DNSLog.cn style).
@@ -66,12 +67,14 @@ func (d *dnslogProvider) SetAPIConfig(apiURL, pollInterval, pollTimeout string) 
 // Probe fetches a fresh subdomain and PHPSESSID from dnslog.
 func (d *dnslogProvider) Probe(ctx context.Context) error {
 	targetURL := "http://47.244.138.18/getdomain.php"
+	logutil.Log("info", "外带", "dnslog 探测: target=%s", targetURL)
 
 	parsed, _ := url.Parse(targetURL)
 	rawReq := fmt.Sprintf("GET %s HTTP/1.1\r\nHost: 47.244.138.18\r\nConnection: close\r\n\r\n", parsed.RequestURI())
 	if d.verbose >= 2 && d.onPacket != nil {
 		d.onPacket("外带", "dnslog probe (获取子域名)", rawReq)
 	}
+	logutil.Log("info", "外带", "dnslog probe: 获取子域名")
 
 	// L7 fix: route through the shared httpclient.Client so global headers,
 	// rate limiting, and retry behaviour apply consistently. The previous
@@ -116,6 +119,7 @@ func (d *dnslogProvider) Probe(ctx context.Context) error {
 
 	rawDomain := strings.TrimSpace(bodyStr)
 	if rawDomain == "" {
+		logutil.Log("warn", "外带", "dnslog probe 返回空域名")
 		return fmt.Errorf("dnslog: empty domain response")
 	}
 	d.domain = rawDomain
@@ -135,6 +139,7 @@ func (d *dnslogProvider) Probe(ctx context.Context) error {
 	if d.cookie == "" {
 		return fmt.Errorf("dnslog: no PHPSESSID cookie")
 	}
+	logutil.Log("info", "外带", "dnslog 探测成功: domain=%s label=%s", d.domain, d.label)
 	return nil
 }
 
@@ -163,6 +168,7 @@ func (d *dnslogProvider) VerifyDNS(ctx context.Context) (bool, error) {
 	if d.domain == "" || d.cookie == "" {
 		return false, fmt.Errorf("dnslog: not probed, call Probe() first")
 	}
+	logutil.Log("info", "外带", "dnslog 验证: label=%s domain=%s", d.label, d.domain)
 	return d.getRecords(ctx)
 }
 

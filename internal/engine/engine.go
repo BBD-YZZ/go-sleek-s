@@ -15,6 +15,7 @@ import (
 	"github.com/gosleek/gosleek/internal/config"
 	"github.com/gosleek/gosleek/internal/fingerprint"
 	"github.com/gosleek/gosleek/internal/httpclient"
+	"github.com/gosleek/gosleek/internal/logutil"
 	"github.com/gosleek/gosleek/internal/matcher"
 	oobpkg "github.com/gosleek/gosleek/internal/oob"
 	"github.com/gosleek/gosleek/internal/placeholder"
@@ -57,7 +58,8 @@ type Scanner struct {
 	fingerprint *fingerprint.Detector
 	cfg         *config.GlobalConfig
 	verbose     int
-	logger      LoggerIface // optional structured logger (pterm-styled)
+	verb        int // effective verbosity (>= config log-level), used for debug/verbosef gates
+	logger      LoggerIface // always non-nil, routes through logutil
 
 	// OOB placeholders injected for every template
 	oobProvider oobpkg.Provider
@@ -142,6 +144,7 @@ func NewScanner(cfg *config.GlobalConfig, verbose int, oob OOBConfig, proxy stri
 		fingerprint:  fp,
 		cfg:          cfg,
 		verbose:      verbose,
+		logger:       newLogutilLogger(),
 		oobProvider:  oobpkg.NewOobProvider(oob.Provider, oob.CeyeToken),
 		oobAvailable: oob.Provider != "", // OOB enabled when provider is configured
 		oobLabel:     oob.Label,
@@ -169,8 +172,8 @@ func (s *Scanner) SetProgressCallback(fn func(completed, total int64, msg string
 }
 
 // LoggerIface is a minimal subset of output.Logger, declared here so the
-// engine package can accept a logger without importing the output package
-// (which imports pterm, and keeps the engine testable with a stub).
+// engine package can accept a logger without importing the output package.
+// Implemented by logutilLogger which routes through logutil.LogKV.
 type LoggerIface interface {
 	DebugKV(msg string, args ...interface{})
 	InfoKV(msg string, args ...interface{})
@@ -178,8 +181,37 @@ type LoggerIface interface {
 	Error(msg string, args ...interface{})
 }
 
-// SetLogger attaches a structured logger to the scanner.
-func (s *Scanner) SetLogger(l LoggerIface) { s.logger = l }
+// logutilLogger implements LoggerIface by routing through logutil.LogKV.
+type logutilLogger struct{}
+
+func newLogutilLogger() *logutilLogger { return &logutilLogger{} }
+
+func (l *logutilLogger) DebugKV(msg string, args ...interface{}) {
+	logutil.LogKV("debug", "调试", msg, args...)
+}
+func (l *logutilLogger) InfoKV(msg string, args ...interface{}) {
+	logutil.LogKV("info", "流程", msg, args...)
+}
+func (l *logutilLogger) WarnKV(msg string, args ...interface{}) {
+	logutil.LogKV("warn", "警告", msg, args...)
+}
+func (l *logutilLogger) Error(msg string, args ...interface{}) {
+	logutil.LogKV("error", "错误", msg, args...)
+}
+
+// SetLogger is deprecated — engine now always uses logutilLogger internally.
+func (s *Scanner) SetLogger(_ LoggerIface) {}
+
+// Logger returns the engine's logutilLogger. Always non-nil.
+func (s *Scanner) Logger() LoggerIface { return s.logger }
+
+// SetMinVerbosity raises the engine's verbosity threshold at runtime.
+// Used when config.yaml has log-level set but no CLI flags are passed.
+func (s *Scanner) SetMinVerbosity(level int) {
+	if level > s.verbose {
+		s.verbose = level
+	}
+}
 
 // getOOBProvider returns the OOB provider for a template, respecting per-template overrides.
 // Falls back to the global provider if the template doesn't specify one,
@@ -321,7 +353,7 @@ func (s *Scanner) aiAnalysisLoop(onAIResult func(*ai.AnalyzeResponse, *types.Res
 			defer s.aiWG.Done()
 			if s.aiProvider == nil {
 				return
-			}
+		}
 			ctx, cancel := context.WithTimeout(context.Background(), time.Duration(s.cfg.AI.Timeout)*time.Second)
 			defer cancel()
 
@@ -335,7 +367,7 @@ func (s *Scanner) aiAnalysisLoop(onAIResult func(*ai.AnalyzeResponse, *types.Res
 				Evidence:     result.Evidence,
 				Extracted:    result.Extracted,
 				Context:      "AI 实时分析",
-			}
+		}
 
 			resp, err := s.aiProvider.Analyze(ctx, req)
 			if err != nil {
@@ -350,7 +382,7 @@ func (s *Scanner) aiAnalysisLoop(onAIResult func(*ai.AnalyzeResponse, *types.Res
 					s.onWebUIAdd(result)
 				}
 				return
-			}
+		}
 
 			if resp == nil {
 				if s.onResult != nil {
@@ -360,18 +392,18 @@ func (s *Scanner) aiAnalysisLoop(onAIResult func(*ai.AnalyzeResponse, *types.Res
 					s.onWebUIAdd(result)
 				}
 				return
-			}
+		}
 
 			confPct := int(resp.Confidence * 100)
 			if s.onVerbose != nil {
 				s.onVerbose("AI 分析: %s - %s  置信度=%d%%  确认=%v  建议=%d条",
 					result.TemplateID, result.Name, confPct, resp.Confident, len(resp.Suggestions))
-			}
+		}
 
 			// 将 AI 分析结果注入到 result.Extracted 中，供 PrintAIResult 展示
 			if result.Extracted == nil {
 				result.Extracted = make(map[string]string)
-			}
+		}
 			result.Extracted["ai_evidence"] = resp.Evidence
 			result.Extracted["ai_exploit"] = resp.Exploit
 			result.Extracted["ai_impact"] = resp.Impact
@@ -386,18 +418,18 @@ func (s *Scanner) aiAnalysisLoop(onAIResult func(*ai.AnalyzeResponse, *types.Res
 					onAIResult(resp, result)
 				}
 				return
-			}
+		}
 
 			// AI 确认通过，推送结果
 			if s.onResult != nil {
 				s.onResult(result)
-			}
+		}
 			if s.onWebUIAdd != nil {
 				s.onWebUIAdd(result)
-			}
+		}
 			if onAIResult != nil {
 				onAIResult(resp, result)
-			}
+		}
 		}(r)
 	}
 }
@@ -436,7 +468,7 @@ func (s *Scanner) aiFingerprintTargets(ctx context.Context, targets []string) {
 		if err != nil {
 			if s.verbose >= 1 {
 				s.verbosef("AI 指纹分析失败: %v", err)
-			}
+		}
 			return
 		}
 		if fpResp != nil {
@@ -484,7 +516,7 @@ func (s *Scanner) Run(ctx context.Context, templates []*types.Template, plugins 
 					// Remove failed provider from cache
 					s.oobProviderCache.Delete(t.ID)
 				}
-			}
+		}
 		}
 	}
 
@@ -494,7 +526,7 @@ func (s *Scanner) Run(ctx context.Context, templates []*types.Template, plugins 
 		if prev, ok := seenIDs[t.ID]; ok {
 			if s.onVerbose != nil {
 				s.onVerbose("WARNING: ID collision '%s' between template and %s", t.ID, prev)
-			}
+		}
 		}
 		seenIDs[t.ID] = "template"
 	}
@@ -503,7 +535,7 @@ func (s *Scanner) Run(ctx context.Context, templates []*types.Template, plugins 
 		if prev, ok := seenIDs[meta.ID]; ok {
 			if s.onVerbose != nil {
 				s.onVerbose("WARNING: ID collision '%s' between plugin and %s", meta.ID, prev)
-			}
+		}
 		}
 		seenIDs[meta.ID] = "plugin"
 	}
@@ -542,11 +574,11 @@ func (s *Scanner) Run(ctx context.Context, templates []*types.Template, plugins 
 						s.onWebUIAdd(r)
 					}
 				}
-			} else {
+		} else {
 				if s.onResult != nil {
 					s.onResult(r)
 				}
-			}
+		}
 		}
 	}()
 
@@ -576,9 +608,8 @@ func (s *Scanner) Run(ctx context.Context, templates []*types.Template, plugins 
 				done := atomic.AddInt64(&s.completed, 1)
 				// A3: periodic save — atomically check throttle and save to avoid TOCTOU race.
 				if resumeState != nil && resumeState.TrySave() {
-					if s.logger != nil {
-						s.logger.InfoKV("resume state saved", "file", resumeState.filePath)
-					}
+					// logger call removed
+
 				}
 				if s.onProgress != nil {
 					var id string
@@ -590,7 +621,7 @@ func (s *Scanner) Run(ctx context.Context, templates []*types.Template, plugins 
 					s.onProgress(done, s.totalJobs,
 						fmt.Sprintf("%s vs %s", job.Target, id))
 				}
-			}
+		}
 		}(i)
 	}
 
@@ -602,17 +633,17 @@ func (s *Scanner) Run(ctx context.Context, templates []*types.Template, plugins 
 					goto done
 				case jobs <- Job{Target: target, Kind: JobKindTemplate, Template: tmpl}:
 				}
-			}
+		}
 			for _, p := range plugins {
 				select {
 				case <-ctx.Done():
 					goto done
 				case jobs <- Job{Target: target, Kind: JobKindPlugin, Plugin: p}:
 				}
-			}
+		}
 			if ctx.Err() != nil {
 				break
-			}
+		}
 		}
 	done:
 		close(jobs)
@@ -641,16 +672,13 @@ func (s *Scanner) runJob(ctx context.Context, job Job, results chan<- *types.Res
 	dedupKey := target + ":::" + id
 	if _, exists := s.dedup.LoadOrStore(dedupKey, true); exists {
 		s.debug("跳过重复: %s vs %s", target, id)
-		if s.logger != nil {
-			s.logger.InfoKV("skip duplicate (already processed)", "target", target, "template", id)
-		}
+		// logger call removed
+
 		atomic.AddInt64(&s.jobDedupCount, 1)
 		return
 	}
 
-	if s.logger != nil {
-		s.logger.InfoKV("task started", "target", target, "template", id)
-	}
+	s.logger.InfoKV("task started", "target", target, "template", id)
 
 	// -vv: 记录模板/插件基本信息
 	if s.verbose >= 2 && s.onDebug != nil {
@@ -673,15 +701,12 @@ func (s *Scanner) runJob(ctx context.Context, job Job, results chan<- *types.Res
 		fp := s.fingerprint.Detect(ctx, target)
 		if !s.fingerprint.Matches(fp, fps) {
 			s.debug("跳过指纹不匹配: %s vs %s", target, id)
-			if s.logger != nil {
-				s.logger.InfoKV("fingerprint mismatch, skip",
-					"target", target, "template", id, "server", fp.Server)
-			}
+			// logger call removed
+
 			return
 		}
-		if s.logger != nil {
-			s.logger.InfoKV("fingerprint matched", "target", target, "template", id, "server", fp.Server)
-		}
+		// logger call removed
+
 		if s.verbose >= 2 && s.onDebug != nil {
 			s.onDebug("指纹匹配通过: template=%s, server=%s, target=%s", id, fp.Server, target)
 		}
@@ -696,23 +721,22 @@ func (s *Scanner) runJob(ctx context.Context, job Job, results chan<- *types.Res
 			var providerName string
 			if tmplProvider != nil {
 				providerName = tmplProvider.Name()
-			} else {
+		} else {
 				providerName = "none"
-			}
+		}
 			s.debug("跳过OOB%s(%s未配置): %s", oobKindName(job), providerName, id)
-			if s.logger != nil {
-				s.logger.InfoKV("skip OOB template", "provider", providerName, "template", id)
-			}
+			// logger call removed
+
 			if s.verbose >= 2 && s.onDebug != nil {
 				s.onDebug("OOB未配置, 跳过: template=%s, provider=%s", id, providerName)
-			}
+		}
 			return
 		}
 	} else if job.Kind == JobKindPlugin && job.Plugin.NeedsOOB() {
 		if !s.oobAvailable || s.oobProvider == nil {
 			if s.verbose >= 2 && s.onDebug != nil {
 				s.onDebug("插件需要OOB但未启用, 跳过: plugin=%s", id)
-			}
+		}
 			return
 		}
 		if s.verbose >= 2 && s.onDebug != nil {
@@ -739,7 +763,7 @@ func (s *Scanner) runJob(ctx context.Context, job Job, results chan<- *types.Res
 				eng.SetExtracted("oob_label", tmplProvider.Label())
 				eng.SetExtracted("oob_token", tmplProvider.Token())
 				eng.SetExtracted("oob_domain", tmplProvider.CallbackURL())
-			}
+		}
 		} else {
 			// 使用全局 provider
 			eng.SetOOB(s.oobProvider.CallbackURL())
@@ -763,27 +787,21 @@ func (s *Scanner) runJob(ctx context.Context, job Job, results chan<- *types.Res
 		// 结果级去重: 相同模板+目标+严重度只报告一次
 		resultKey := target + "|" + id + "|" + result.Severity
 		if _, loaded := s.resultDedup.LoadOrStore(resultKey, true); loaded {
-			if s.logger != nil {
-				s.logger.InfoKV("skip duplicate result",
-					"target", target, "template", id, "severity", result.Severity)
-			}
+			// logger call removed
+
 			if s.verbose >= 2 && s.onDebug != nil {
 				s.onDebug("跳过重复结果: %s vs %s (severity=%s)", target, id, result.Severity)
-			}
+		}
 			atomic.AddInt64(&s.resultDedupCount, 1)
 		} else {
 			atomic.AddInt64(&s.matched, 1)
 			results <- result
-			if s.logger != nil {
-				s.logger.InfoKV("matched",
-					"target", target, "template", id,
-					"severity", result.Severity, "evidence", result.Evidence)
-			}
+			// logger call removed
+
 		}
 	} else {
-		if s.logger != nil {
-			s.logger.InfoKV("task completed (no match)", "target", target, "template", id)
-		}
+		// logger call removed
+
 	}
 
 	// 记录已完成任务，供断点续扫使用（覆盖 YAML 模板和 Go 插件）
@@ -813,9 +831,7 @@ func (s *Scanner) executePlugin(ctx context.Context, p plugin.Plugin, target str
 		// 直接传递已配置的 oobProvider，确保 OOB API 请求有日志输出
 		pctx.Ceye = plugin.NewOOBHandle(s.oobProvider, s.client)
 	}
-	if s.logger != nil {
-		pctx.Log = plugin.NewPluginLogger(p.Meta().ID, s.logger)
-	}
+	pctx.Log = plugin.NewPluginLogger(p.Meta().ID, s.logger)
 
 	// 注入 Reporter：让 Go 插件能输出与 YAML 工作流一致的 Burp-style 请求/响应包日志
 	pctx.Reporter = plugin.NewPluginReporter(
@@ -865,19 +881,19 @@ func (s *Scanner) executeHTTP(ctx context.Context, tmpl *types.Template, target 
 			case <-ctx.Done():
 				return nil
 			default:
-			}
+		}
 
 			reqTimeout := timeout
 			if req.Timeout > 0 {
 				reqTimeout = req.Timeout
-			}
+		}
 
 			if req.RunIf != "" {
 				if !matcher.EvalRunIf(req.RunIf, allExtracted, eng) {
 					s.debug("[SKIP]   run-if false: %s req[%d]", tmpl.ID, i)
 					continue
 				}
-			}
+		}
 
 			// Range injection: iterate over values and replace placeholder FIRST
 			// (must be done before placeholder substitution so that {{key}}
@@ -930,7 +946,7 @@ func (s *Scanner) executeHTTP(ctx context.Context, tmpl *types.Template, target 
 					s.sendRequest(ctx, tmpl, i, rawReq, reqTimeout, req.Redirects, allExtracted, eng, &reqResults, &reqEvidence, target, req.Extractors, req.Matchers, !req.Probe, &lastRawReq, &lastRawResp, &lastRedirectChain)
 				}
 				continue
-			}
+		}
 
 			rawReq := eng.ReplaceWithEscape(req.Raw)
 			if rawReq == "" {
@@ -988,18 +1004,18 @@ func (s *Scanner) executeHTTP(ctx context.Context, tmpl *types.Template, target 
 				if rawReq == "" {
 					continue
 				}
-			} else {
+		} else {
 				// For raw requests, placeholder substitution only
 				// (global headers already injected in executeHTTP or via client)
 				rawReq = eng.ReplaceWithEscape(rawReq)
-			}
+		}
 
 			// Wordlist injection (multiple wordlists → cartesian product)
 			var wordlistCombinations [][]string
 			if len(req.Wordlist) > 0 {
 				// Load all wordlists and build cartesian product
 				wordlistCombinations = buildWordlistCombinations(s, req.Wordlist)
-			}
+		}
 			if len(wordlistCombinations) > 0 {
 				for _, combo := range wordlistCombinations {
 					select {
@@ -1018,7 +1034,7 @@ func (s *Scanner) executeHTTP(ctx context.Context, tmpl *types.Template, target 
 					s.sendRequest(ctx, tmpl, i, lineReq, reqTimeout, req.Redirects, allExtracted, eng, &reqResults, &reqEvidence, target, req.Extractors, req.Matchers, !req.Probe, &lastRawReq, &lastRawResp, &lastRedirectChain)
 				}
 				continue
-			}
+		}
 			// Probe requests with extractors still run, but matcher results are ignored
 			s.sendRequest(ctx, tmpl, i, rawReq, reqTimeout, req.Redirects, allExtracted, eng, &reqResults, &reqEvidence, target, req.Extractors, req.Matchers, !req.Probe, &lastRawReq, &lastRawResp, &lastRedirectChain)
 		}
@@ -1067,9 +1083,8 @@ func (s *Scanner) sendRequest(ctx context.Context, tmpl *types.Template, reqIdx 
 	parsed, err := httpclient.ParseRaw(rawReq)
 	if err != nil {
 		s.verbosef("parse raw: %s req[%d]: %v", tmpl.ID, reqIdx, err)
-		if s.logger != nil {
-			s.logger.WarnKV("parse raw request failed", "template", tmpl.ID, "req", reqIdx, "error", err.Error())
-		}
+		// logger call removed
+
 		*reqResults = append(*reqResults, false)
 		return
 	}
@@ -1085,9 +1100,8 @@ func (s *Scanner) sendRequest(ctx context.Context, tmpl *types.Template, reqIdx 
 	cancel()
 	if err != nil {
 		s.verbosef("send: %s req[%d]: %v", tmpl.ID, reqIdx, err)
-		if s.logger != nil {
-			s.logger.WarnKV("HTTP request failed", "template", tmpl.ID, "req", reqIdx, "error", err.Error())
-		}
+		// logger call removed
+
 		*reqResults = append(*reqResults, false)
 		return
 	}
@@ -1099,14 +1113,14 @@ func (s *Scanner) sendRequest(ctx context.Context, tmpl *types.Template, reqIdx 
 		if len(resp.RedirectChain) > 0 {
 			for i, rh := range resp.RedirectChain {
 				s.onDebug("  重定向[%d]: %d → %s", i, rh.StatusCode, rh.Location)
-			}
+		}
 		}
 		// 记录提取器变量
 		if len(extractors) > 0 {
 			var keys []string
 			for k := range allExtracted {
 				keys = append(keys, k)
-			}
+		}
 			s.onDebug("当前提取变量: %s", strings.Join(keys, ", "))
 		}
 	}
@@ -1155,10 +1169,10 @@ func (s *Scanner) sendRequest(ctx context.Context, tmpl *types.Template, reqIdx 
 			// Capture raw request/response for reporting
 			if rawReqPtr != nil {
 				*rawReqPtr = rawReq
-			}
+		}
 			if rawRespPtr != nil && resp != nil {
 				*rawRespPtr = resp.Raw
-			}
+		}
 			// Capture redirect chain if present
 			if rawChainPtr != nil && resp != nil && len(resp.RedirectChain) > 0 {
 				for _, rh := range resp.RedirectChain {
@@ -1168,7 +1182,7 @@ func (s *Scanner) sendRequest(ctx context.Context, tmpl *types.Template, reqIdx 
 						Time:       rh.Time.String(),
 					})
 				}
-			}
+		}
 		}
 		if s.verbose >= 2 && s.onDebug != nil {
 			s.onDebug("匹配结果: template=%s req[%d]  %s  types=%s  evidence=%q",
@@ -1360,11 +1374,8 @@ func (s *Scanner) logRequest(tmplID string, i int, raw string) {
 	method, path := httpclient.ParseMethodPath(raw)
 
 	// INFO: request summary (visible at -v)
-	if s.logger != nil {
-		s.logger.InfoKV("HTTP request sent",
-			"template", tmplID, "req", i,
-			"method", method, "path", path, "bytes", len(raw))
-	}
+	// logger call removed
+
 
 	// -v+: Burp-style packet dump
 	if s.verbose >= 1 && s.onPacket != nil {
@@ -1378,11 +1389,8 @@ func (s *Scanner) logRequest(tmplID string, i int, raw string) {
 // -vv level: Burp-style packet dump via onPacket callback.
 func (s *Scanner) logResponse(tmplID string, i int, status int, body string, raw string, elapsed time.Duration) {
 	// INFO: response summary (visible at -v)
-	if s.logger != nil {
-		s.logger.InfoKV("HTTP response received",
-			"template", tmplID, "req", i,
-			"status", status, "time_ms", elapsed.Milliseconds(), "bytes", len(body))
-	}
+	// logger call removed
+
 
 	// -v+: Burp-style packet dump
 	if s.verbose >= 1 && s.onPacket != nil {
@@ -1403,7 +1411,6 @@ func (s *Scanner) logMatcherResult(tmplID string, i int, ms []types.Matcher, con
 	typesStr := strings.Join(mTypes, ",")
 
 	// INFO: match result (visible at -v)
-	if s.logger != nil {
 		if matched {
 			s.logger.InfoKV("matcher PASS",
 				"template", tmplID, "req", i,
@@ -1413,7 +1420,6 @@ func (s *Scanner) logMatcherResult(tmplID string, i int, ms []types.Matcher, con
 				"template", tmplID, "req", i,
 				"condition", cond, "types", typesStr)
 		}
-	}
 
 	// -vv: detailed match result with colored PASS/FAIL
 	if s.verbose >= 2 && s.onRaw != nil {
@@ -1441,7 +1447,7 @@ func TemplateNeedsOOB(tmpl *types.Template) bool {
 		for _, m := range placeholderMarkers {
 			if strings.Contains(req.Raw, m) {
 				return true
-			}
+		}
 		}
 	}
 	for _, step := range tmpl.Workflow {
@@ -1450,7 +1456,7 @@ func TemplateNeedsOOB(tmpl *types.Template) bool {
 				if strings.Contains(req.Raw, m) {
 					return true
 				}
-			}
+		}
 		}
 	}
 	return false
@@ -1472,7 +1478,7 @@ func aggregateMatches(results []bool, cond string) bool {
 		for _, r := range results {
 			if !r {
 				return false
-			}
+		}
 		}
 		return true
 	}

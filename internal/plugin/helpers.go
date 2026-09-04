@@ -8,6 +8,7 @@ import (
 
 	"github.com/gosleek/gosleek/internal/httpclient"
 	"github.com/gosleek/gosleek/internal/oob"
+	"github.com/gosleek/gosleek/internal/logutil"
 )
 
 // pluginOOBHandle 封装 OOBHandle 接口，委托给 oob.Provider 实现。
@@ -79,7 +80,7 @@ func (c *pluginOOBHandle) VerifyHTTP(ctx context.Context) (bool, error) {
 type pluginLogger struct {
 	target string
 	id     string
-	inner  interface {
+	inner interface {
 		DebugKV(msg string, args ...interface{})
 		InfoKV(msg string, args ...interface{})
 		WarnKV(msg string, args ...interface{})
@@ -174,6 +175,9 @@ func (r *pluginReporter) LogStep(stepName string, stepIndex int) {
 			"step", stepName, "step_index", stepIndex,
 			"template", r.id)
 	}
+	if r.verbose >= 1 {
+		logutil.Log("info", "流程", "插件[%s] 执行步骤 %s (step %d)", r.id, stepName, stepIndex)
+	}
 }
 
 // LogRequest 记录 HTTP 请求，格式与 YAML 工作流一致。
@@ -235,5 +239,8 @@ func (r *pluginReporter) LogMatch(stepName string, stepIndex int, reqIndex int, 
 		}
 		r.onRaw("匹配", "workflow[%s] step[%d] req[%d]  %s  cond=%s  types=%s  evidence=%q",
 			stepName, stepIndex, reqIndex, status, condition, typesStr, evidence)
+	}
+	if matched && r.verbose >= 1 {
+		logutil.Log("info", "匹配", "插件[%s] 步骤%s req%d 命中: types=%s evidence=%s", r.id, stepName, reqIndex, typesStr, evidence)
 	}
 }

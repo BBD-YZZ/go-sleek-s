@@ -42,19 +42,19 @@ type LoggerIface interface {
 
 // Task 表示一个被 Web UI 管理的扫描任务。
 type Task struct {
-	ID           string              `json:"id"`
-	Name         string              `json:"name"`
-	Targets      []string            `json:"targets"`
-	Templates    []string            `json:"templates"`
-	Status       string              `json:"status"` // "running" / "completed" / "stopped"
-	StartedAt    time.Time           `json:"started_at"`
-	CompletedAt  time.Time           `json:"completed_at"`
-	ResultCount  int                 `json:"result_count"`
-	Total        int                 `json:"total"`
-	Matched      int                 `json:"matched"`
-	Results      []*types.Result     `json:"results,omitempty"`
-	resultsMu    sync.RWMutex        // 保护 Results 字段
-	onResult     func(*types.Result) // 扫描引擎回调
+	ID          string              `json:"id"`
+	Name        string              `json:"name"`
+	Targets     []string            `json:"targets"`
+	Templates   []string            `json:"templates"`
+	Status      string              `json:"status"` // "running" / "completed" / "stopped"
+	StartedAt   time.Time           `json:"started_at"`
+	CompletedAt time.Time           `json:"completed_at"`
+	ResultCount int                 `json:"result_count"`
+	Total       int                 `json:"total"`
+	Matched     int                 `json:"matched"`
+	Results     []*types.Result     `json:"results,omitempty"`
+	resultsMu   sync.RWMutex        // 保护 Results 字段
+	onResult    func(*types.Result) // 扫描引擎回调
 }
 
 // ---------------------------------------------------------------------------
@@ -356,7 +356,7 @@ func (s *Server) Start() error {
 		if s.logger != nil {
 			s.logger.InfoKV("Web UI 启动", "addr", s.addr)
 		}
-		if err := s.srv.Serve(ln); err != nil && !strings.Contains(err.Error(), "use of closed") {
+		if err := s.srv.Serve(ln); err != nil && !strings.Contains(err.Error(), "use of closed") && !strings.Contains(err.Error(), "Server closed") {
 			if s.logger != nil {
 				s.logger.Error("Web UI 服务异常", "error", err)
 			}
@@ -444,8 +444,8 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 
 	// 目标统计：按目标 URL 分组计数
 	type targetStat struct {
-		Target string `json:"target"`
-		Count  int    `json:"count"`
+		Target string  `json:"target"`
+		Count  int     `json:"count"`
 		BarPct float64 `json:"bar_pct"`
 	}
 	targetCounts := make(map[string]int)
@@ -468,24 +468,24 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := map[string]interface{}{
-		"Tasks":         allTasks,
-		"Results":       allResults,
-		"Total":         total,
-		"DedupCount":    atomic.LoadInt64(&s.dedupCount),
-		"Running":       countByStatus(allTasks, "running"),
-		"Completed":     countByStatus(allTasks, "completed"),
-		"Stopped":       countByStatus(allTasks, "stopped"),
-		"Critical":      crit,
-		"High":          high,
-		"Medium":        med,
-		"Low":           low,
-		"Info":          info,
-		"CriticalPct":   criticalPct,
+		"Tasks":           allTasks,
+		"Results":         allResults,
+		"Total":           total,
+		"DedupCount":      atomic.LoadInt64(&s.dedupCount),
+		"Running":         countByStatus(allTasks, "running"),
+		"Completed":       countByStatus(allTasks, "completed"),
+		"Stopped":         countByStatus(allTasks, "stopped"),
+		"Critical":        crit,
+		"High":            high,
+		"Medium":          med,
+		"Low":             low,
+		"Info":            info,
+		"CriticalPct":     criticalPct,
 		"CriticalHighPct": criticalHighPct,
-		"MediumPct":     mediumPct,
-		"LowPct":        lowPct,
-		"TargetStats":   targetStats,
-		"ServerAddr":    s.addr,
+		"MediumPct":       mediumPct,
+		"LowPct":          lowPct,
+		"TargetStats":     targetStats,
+		"ServerAddr":      s.addr,
 	}
 	buf := new(bytes.Buffer)
 	if err := s.templates.ExecuteTemplate(buf, "index.html", data); err != nil {
@@ -637,15 +637,15 @@ func (s *Server) handleResults(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		// scan 命令推送结果
 		var input struct {
-			TemplateID  string    `json:"template-id"`
-			Name        string    `json:"name"`
-			Severity    string    `json:"severity"`
-			Target      string    `json:"target"`
-			MatchedAt   string    `json:"matched-at"`
-			Evidence    string    `json:"evidence,omitempty"`
-			Timestamp   string    `json:"timestamp"`
-			RawRequest  string    `json:"raw-request,omitempty"`
-			RawResponse string    `json:"raw-response,omitempty"`
+			TemplateID  string `json:"template-id"`
+			Name        string `json:"name"`
+			Severity    string `json:"severity"`
+			Target      string `json:"target"`
+			MatchedAt   string `json:"matched-at"`
+			Evidence    string `json:"evidence,omitempty"`
+			Timestamp   string `json:"timestamp"`
+			RawRequest  string `json:"raw-request,omitempty"`
+			RawResponse string `json:"raw-response,omitempty"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 			http.Error(w, "请求体解析失败: "+err.Error(), http.StatusBadRequest)

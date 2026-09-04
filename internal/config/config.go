@@ -1,11 +1,11 @@
 package config
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/gosleek/gosleek/internal/logutil"
 	"github.com/gosleek/gosleek/pkg/types"
 	"gopkg.in/yaml.v3"
 )
@@ -186,9 +186,11 @@ func Load(path string) (*GlobalConfig, error) {
 	if path != "" {
 		data, err := os.ReadFile(path)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "[WARN] config file %s read failed: %v, using defaults\n", path, err)
+			logutil.Log("warn", "跳过", "配置文件读取失败 %s: %v，使用默认配置", path, err)
 		} else if err := yaml.Unmarshal(data, cfg); err != nil {
-			fmt.Fprintf(os.Stderr, "[WARN] config file %s parse failed: %v, using defaults\n", path, err)
+			logutil.Log("warn", "跳过", "配置文件解析失败 %s: %v，使用默认配置", path, err)
+		} else {
+			logutil.Log("信息", "成功", "已加载配置文件: %s", path)
 		}
 	}
 

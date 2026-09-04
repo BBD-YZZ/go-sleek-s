@@ -112,6 +112,12 @@ func NewConsole(verbose int) *Console {
 	}
 }
 
+// SetMinLevel sets the minimum verbosity level for console output.
+// Used by logutil to apply config.yaml log-level when no CLI flags are set.
+func (c *Console) SetMinLevel(level int) {
+	c.verbose = max(c.verbose, level)
+}
+
 // SetRedact enables/disables output redaction.
 func (c *Console) SetRedact(v bool) { c.redact = v }
 
@@ -186,6 +192,11 @@ func (c *Console) pLine(tag string, levelMin int, format string, args ...interfa
 			pterm.Printf("%s %s\n", contIndent, l)
 		}
 	}
+}
+
+// PLine is the exported version of pLine, callable from logutil.
+func (c *Console) PLine(tag string, levelMin int, format string, args ...interface{}) {
+	c.pLine(tag, levelMin, format, args...)
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -326,11 +337,11 @@ func (c *Console) PrintScanConfig(info ScanConfigInfo) {
 	if info.MaxRedirects > 0 {
 		redirectStr += fmt.Sprintf(" (最多 %d 次)", info.MaxRedirects)
 	}
-	left = append(left, kv{"重定向", redirectStr})
+	left = append(left, kv{"重定向否", redirectStr})
 
 	tlsStr := pterm.Gray("✓ 已校验")
 	if info.Insecure {
-		tlsStr = pterm.Red("⚠ 跳过校验 (-k)")
+		tlsStr = pterm.Red("跳过校验 (-k)")
 	}
 	left = append(left, kv{"TLS 校验", tlsStr})
 
@@ -338,7 +349,7 @@ func (c *Console) PrintScanConfig(info ScanConfigInfo) {
 	if info.AllowExternal {
 		externalStr = pterm.Green("允许外部")
 	}
-	left = append(left, kv{"外部主机", externalStr})
+	right = append(right, kv{"外部主机", externalStr})
 
 	if info.MaxBodySize > 0 {
 		right = append(right, kv{"最大响应", fmt.Sprintf("%d MB", info.MaxBodySize/1024/1024)})

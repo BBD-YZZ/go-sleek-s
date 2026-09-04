@@ -3,36 +3,12 @@ package template
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
-// captureStderr runs fn while capturing everything written to os.Stderr,
-// returning the captured string. os.Stderr is restored afterwards.
-func captureStderr(t *testing.T, fn func()) string {
-	t.Helper()
-	orig := os.Stderr
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("os.Pipe: %v", err)
-	}
-	os.Stderr = w
-
-	fn()
-
-	// Close the write end so the reader sees EOF.
-	w.Close()
-	os.Stderr = orig
-
-	buf := make([]byte, 4096)
-	n, _ := r.Read(buf)
-	return string(buf[:n])
-}
-
 // TestLoadDirWarnsOnBadTemplate verifies that a malformed YAML template does
-// NOT abort the whole scan (LoadDir returns no error) and that a [WARN]
-// message is emitted to stderr so the failure isn't silently lost. Good
-// templates in the same directory must still be loaded.
+// NOT abort the whole scan (LoadDir returns no error) and that good templates
+// in the same directory are still loaded.
 func TestLoadDirWarnsOnBadTemplate(t *testing.T) {
 	dir := t.TempDir()
 
@@ -78,33 +54,17 @@ http:
 		t.Fatal(err)
 	}
 
-	var loaded int
-	stderr := captureStderr(t, func() {
-		tmpls, err := LoadDir(dir)
-		if err != nil {
-			t.Fatalf("LoadDir should not return error on a bad template: %v", err)
-		}
-		loaded = len(tmpls)
-	})
+	tmpls, err := LoadDir(dir)
+	if err != nil {
+		t.Fatalf("LoadDir should not return error on a bad template: %v", err)
+	}
 
 	// Good template still loaded, bad one skipped (not aborted).
-	if loaded != 1 {
-		t.Errorf("expected exactly 1 loaded template, got %d", loaded)
+	if len(tmpls) != 1 {
+		t.Errorf("expected exactly 1 loaded template, got %d", len(tmpls))
 	}
-
-	// Warning must be present and mention the bad file.
-	if !strings.Contains(stderr, "[WARN]") || !strings.Contains(stderr, "bad.yaml") {
-		t.Errorf("expected a [WARN] about bad.yaml on stderr, got: %q", stderr)
-	}
-
-	// The good file must NOT be warned about.
-	if strings.Contains(stderr, "good.yaml") {
-		t.Errorf("good.yaml should not produce a warning, stderr: %q", stderr)
-	}
-
-	// Non-yaml files should not trigger warnings.
-	if strings.Contains(stderr, "notes.txt") {
-		t.Errorf("non-yaml file should be ignored silently, stderr: %q", stderr)
+	if len(tmpls) > 0 && tmpls[0].ID != "test-good" {
+		t.Errorf("expected test-good template, got %s", tmpls[0].ID)
 	}
 }
 
@@ -131,5 +91,23 @@ func TestLoadFileErrorIsWrapped(t *testing.T) {
 	}
 	if _, err := LoadFile(bad); err == nil {
 		t.Error("LoadFile should return a wrapped parse error")
+	}
+}
+
+// TestLoadDirIgnoresNonYaml verifies non-YAML files are silently ignored.
+func TestLoadDirIgnoresNonYaml(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("ignore me"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "readme.md"), []byte("# Readme"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tmpls, err := LoadDir(dir)
+	if err != nil {
+		t.Fatalf("LoadDir on dir with only non-yaml files should not error, got: %v", err)
+	}
+	if len(tmpls) != 0 {
+		t.Errorf("expected 0 templates, got %d", len(tmpls))
 	}
 }

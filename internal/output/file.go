@@ -119,7 +119,7 @@ func writeHTML(results []*types.Result, path string) error {
 	// Chart.js - embedded offline by default
 	sb.WriteString(fmt.Sprintf("<script>%s</script>\n", getChartJS()))
 	sb.WriteString("</head>\n<body>\n")
-	sb.WriteString(fmt.Sprintf("<h1>🔍 gosleek 扫描报告</h1>\n"))
+	sb.WriteString("<h1>🔍 gosleek 扫描报告</h1>\n")
 	sb.WriteString(fmt.Sprintf("<p>生成时间: %s</p>\n", time.Now().Format("2006-01-02 15:04:05")))
 
 	// 统计严重度分布
@@ -236,7 +236,7 @@ func writeHTML(results []*types.Result, path string) error {
 	sb.WriteString("<table>\n<tr><th>严重度</th><th>模板 ID</th><th>名称</th><th>目标</th><th>证据</th></tr>\n")
 	for _, r := range results {
 		sevClass := strings.ToLower(r.Severity)
-		sb.WriteString(fmt.Sprintf("<tr>\n"))
+		sb.WriteString("<tr>\n")
 		sb.WriteString(fmt.Sprintf("<td><span class=\"badge badge-%s\">%s</span></td>\n", sevClass, strings.ToUpper(r.Severity)))
 		sb.WriteString(fmt.Sprintf("<td>%s</td>\n", html.EscapeString(r.TemplateID)))
 		sb.WriteString(fmt.Sprintf("<td>%s</td>\n", html.EscapeString(r.Name)))
@@ -304,7 +304,7 @@ func writeMarkdown(results []*types.Result, path string) error {
 	}
 
 	sb.WriteString("## 概览\n\n")
-	sb.WriteString(fmt.Sprintf("| 指标 | 数量 |\n|------|------|\n",))
+	sb.WriteString("| 指标 | 数量 |\n|------|------|\n")
 	sb.WriteString(fmt.Sprintf("| 总漏洞数 | %d |\n", len(results)))
 	for _, sev := range []string{"critical", "high", "medium", "low", "info"} {
 		if count, ok := sevCount[sev]; ok && count > 0 {

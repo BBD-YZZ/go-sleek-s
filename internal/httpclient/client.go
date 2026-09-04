@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gosleek/gosleek/internal/logutil"
 	"github.com/gosleek/gosleek/internal/placeholder"
 	"github.com/gosleek/gosleek/internal/ratelimit"
 )
@@ -269,6 +270,7 @@ func (c *Client) SendParsed(ctx context.Context, baseURL string, req *RawRequest
 	var lastErr error
 	for attempt := 0; attempt <= c.maxRetries; attempt++ {
 		if attempt > 0 {
+			logutil.Log("warn", "限速", "重试第 %d/%d 次: %s %s", attempt, c.maxRetries, req.Method, baseURL)
 			timer := time.NewTimer(c.backoff * time.Duration(1<<(attempt-1)))
 			select {
 			case <-ctx.Done():

@@ -53,7 +53,7 @@ oob:
 # === AI 辅助分析配置 ===
 # 优先级: 命令行参数 (--ai, --ai-provider 等) > 此配置文件
 ai:
-  enabled: true               # 是否启用 AI 实时分析（扫描过程中对命中结果进行 AI 验证）
+  enabled: false               # 是否启用 AI 实时分析（扫描过程中对命中结果进行 AI 验证）
   provider: agnes              # AI 提供商: openai, deepseek, kimi, glm, ollama, agnes, azure
   model: agnes-2.5-flash       # AI 模型名称
   base-url: ""                 # API Base URL（为空时使用提供商默认值）

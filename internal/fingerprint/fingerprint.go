@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/gosleek/gosleek/internal/httpclient"
+	"github.com/gosleek/gosleek/internal/logutil"
 	"github.com/gosleek/gosleek/internal/placeholder"
 	"github.com/gosleek/gosleek/pkg/types"
 )
@@ -72,9 +73,11 @@ func (d *Detector) Detect(ctx context.Context, target string) *TargetFingerprint
 	rawReq := placeholder.New(ti, nil).ReplaceWithEscape(
 		"GET / HTTP/1.1\r\nHost: {{Hostname}}\r\nUser-Agent: gosleek-fp/1.0\r\nConnection: close\r\n\r\n",
 	)
+	logutil.Log("info", "指纹", "开始探测目标: %s", target)
 	resp, err := d.client.SendRaw(ctx, target, rawReq)
 	if err != nil {
-		// Cache failure briefly to avoid repeated probes for the same target.
+		// Cache failure briefly to avoid repeated探测. for the same target.
+		logutil.Log("warn", "指纹", "探测失败: %s err=%v", target, err)
 		d.cache.Store(target, &cacheEntry{fp: fp, createdAt: time.Now()})
 		return fp
 	}
@@ -86,13 +89,20 @@ func (d *Detector) Detect(ctx context.Context, target string) *TargetFingerprint
 	if server := resp.GetHeader("Server"); server != "" {
 		fp.Server = server
 		fp.Headers["Server"] = server
+		logutil.Log("info", "指纹", "检测 Server: %s", server)
 	}
 
 	// Extract title from body
 	fp.Titles = extractTitles(resp.Body)
+	if len(fp.Titles) > 0 {
+		logutil.Log("info", "指纹", "检测标题: %v", fp.Titles)
+	}
 
 	// Detect common technologies
 	d.detectTech(fp)
+	if len(fp.TechStack) > 0 {
+		logutil.Log("info", "指纹", "检测技术栈: %v", fp.TechStack)
+	}
 
 	// Store all response headers
 	for k, vs := range resp.Headers {

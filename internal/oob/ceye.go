@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gosleek/gosleek/internal/httpclient"
+	"github.com/gosleek/gosleek/internal/logutil"
 	"github.com/gosleek/gosleek/internal/placeholder"
 )
 
@@ -105,6 +106,7 @@ func (c *ceyeProvider) verifyRecords(ctx context.Context, recordType string) (bo
 	if c.verbose >= 2 && c.onPacket != nil {
 		c.onPacket("外带", fmt.Sprintf("ceye %s query  label=%s type=%s", recordType, c.label, recordType), rawReq)
 	}
+	logutil.Log("info", "外带", "ceye %s 查询: label=%s apiBase=%s", recordType, c.label, apiBase)
 
 	// Build the ceye API poll timeout (default 10s from config.yaml).
 	// Add extra buffer for retries: MaxRetries=2 means up to 3 total calls
@@ -232,6 +234,7 @@ func (c *ceyeProvider) verifyRecords(ctx context.Context, recordType string) (bo
 	}
 
 	// Parse JSON and check for matches
+	logutil.Log("info", "外带", "ceye %s 检查记录: label=%s", recordType, c.label)
 	return c.checkRecords(ctx, recordType, resp.Body)
 }
 
@@ -253,12 +256,16 @@ func (c *ceyeProvider) checkRecords(ctx context.Context, recordType, body string
 
 	// Match: record name contains label (case-insensitive)
 	// e.g. record name "gs-a5d2e859.lbwssd.ceye.io" contains label "gs-a5d2e859"
+	logutil.Log("info", "外带", "ceye %s 匹配: 共 %d 条记录", recordType, len(result.Data))
 	for _, r := range result.Data {
+		logutil.Log("debug", "外带", "  记录: name=%s type=%s", r.Name, r.Type)
 		s := strings.TrimRight(strings.ToLower(r.Name), ".")
 		if strings.Contains(s, strings.ToLower(c.label)) {
+			logutil.Log("info", "外带", "ceye %s 命中: %s", recordType, r.Name)
 			return true, nil
 		}
 	}
+	logutil.Log("debug", "外带", "ceye %s 无匹配", recordType)
 	return false, nil
 }
 
@@ -272,6 +279,7 @@ func (c *ceyeProvider) Setup(label, domain string) {
 	if domain != "" {
 		c.callbackURL = label + "." + domain
 	}
+	logutil.Log("info", "外带", "ceye 配置: label=%s callbackURL=%s", c.label, c.callbackURL)
 }
 
 // SetClient sets the shared HTTP client.

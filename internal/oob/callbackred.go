@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gosleek/gosleek/internal/httpclient"
+	"github.com/gosleek/gosleek/internal/logutil"
 )
 
 // callbackRedResponse is the JSON response from callback.red GET /get
@@ -147,6 +148,7 @@ func (c *callbackRedProvider) verifyRecords(ctx context.Context) (bool, error) {
 	if c.key == "" {
 		return false, fmt.Errorf("callback.red: no key, call Probe() first")
 	}
+	logutil.Log("info", "外带", "callback.red 验证: label=%s key=%s", c.label, c.key[:min(len(c.key), 8)])
 
 	rawReq := "POST / HTTP/1.1\r\n" +
 		"Host: callback.red\r\n" +
@@ -189,6 +191,7 @@ func (c *callbackRedProvider) verifyRecords(ctx context.Context) (bool, error) {
 		return false, nil
 	}
 	if result.Code != 200 {
+		logutil.Log("warn", "外带", "callback.red 返回非预期状态码: %d", result.Code)
 		return false, fmt.Errorf("callback.red: unexpected code %d", result.Code)
 	}
 

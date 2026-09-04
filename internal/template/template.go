@@ -9,12 +9,23 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/gosleek/gosleek/internal/logutil"
 	"github.com/gosleek/gosleek/pkg/types"
 	"gopkg.in/yaml.v3"
 )
 
 // LoadDir loads all YAML templates from a directory (recursively).
 func LoadDir(dir string) ([]*types.Template, error) {
+	return loadDir(dir, true)
+}
+
+// LoadDirSilent loads templates without logging.
+// Used by main.go to defer template listing until after the config panel.
+func LoadDirSilent(dir string) ([]*types.Template, error) {
+	return loadDir(dir, false)
+}
+
+func loadDir(dir string, log bool) ([]*types.Template, error) {
 	var templates []*types.Template
 	var walkErr error
 	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
@@ -22,7 +33,9 @@ func LoadDir(dir string) ([]*types.Template, error) {
 		// logged but not fatal — we skip the problematic entry and
 		// continue walking the rest of the tree.
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "[WARN] 跳过目录遍历错误 %s: %v\n", path, err)
+			if log {
+				logutil.Log("warn", "跳过", "%s: %v", path, err)
+			}
 			// Remember the error but don't abort the walk.
 			// We'll return it after collecting whatever templates we could.
 			walkErr = err
@@ -40,7 +53,9 @@ func LoadDir(dir string) ([]*types.Template, error) {
 			// Don't fail the whole scan for one bad template, but warn so
 			// the failure isn't silently lost (e.g. a typo'd YAML field or
 			// a misplaced template file).
-			fmt.Fprintf(os.Stderr, "[WARN] 跳过无法加载的模板 %s: %v\n", path, err)
+			if log {
+				logutil.Log("warn", "跳过", "无法加载的模板 %s: %v", path, err)
+			}
 			return nil
 		}
 		templates = append(templates, tmpl)
@@ -53,6 +68,16 @@ func LoadDir(dir string) ([]*types.Template, error) {
 	}
 	if walkErr != nil {
 		return templates, walkErr
+	}
+	if log {
+		if len(templates) > 0 {
+			logutil.Log("info", "成功", "已加载 %d 个模板 (来自 %s)", len(templates), dir)
+			for _, t := range templates {
+				logutil.Log("info", "模板", "  - %s (%s) [%s] %s", t.ID, t.Name, t.Severity, t.FilePath)
+			}
+		} else {
+			logutil.Log("warn", "跳过", "目录 %s 中未找到任何模板文件", dir)
+		}
 	}
 	return templates, nil
 }

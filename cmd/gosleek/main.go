@@ -20,6 +20,7 @@ import (
 	"github.com/gosleek/gosleek/internal/distributed"
 	"github.com/gosleek/gosleek/internal/engine"
 	"github.com/gosleek/gosleek/internal/httpclient"
+	"github.com/gosleek/gosleek/internal/logutil"
 	"github.com/gosleek/gosleek/internal/output"
 	"github.com/gosleek/gosleek/internal/plugin"
 	"github.com/gosleek/gosleek/internal/replay"
@@ -319,6 +320,15 @@ func runScanParsed(
 		os.Exit(1)
 	}
 
+	console := output.NewConsole(verb)
+	// Register global logger BEFORE any submodule logging (templates, OOB, fingerprint)
+	logutil.SetConsole(console)
+	logutil.SetEffectiveVerb(verb)
+
+	if verb >= 0 {
+		console.PrintDisclaimer()
+	}
+
 	var tmplList []*types.Template
 	var tagFilter, sevFilter, excludeFilter []string
 	if tags != "" {
@@ -335,7 +345,8 @@ func runScanParsed(
 		if templateID != "" {
 			idFilter = []string{templateID}
 		}
-		if loaded, err := template.LoadDir(templatesDir); err == nil {
+		// Load templates silently first - logs will be displayed after config panel
+		if loaded, err := template.LoadDirSilent(templatesDir); err == nil {
 			tmplList = template.ExcludeByID(
 				template.FilterBySeverity(
 					template.FilterByTag(
@@ -366,11 +377,6 @@ func runScanParsed(
 	if len(tmplList) == 0 && len(pluginList) == 0 {
 		fmt.Fprintln(os.Stderr, "未找到匹配的模板或插件")
 		os.Exit(1)
-	}
-
-	console := output.NewConsole(verb)
-	if verb >= 0 {
-		console.PrintDisclaimer()
 	}
 
 	oobCfg := engine.OOBConfig{}
@@ -473,10 +479,13 @@ func runScanParsed(
 	if actualLogLevel == "" && cfg.LogLevel != "" {
 		actualLogLevel = cfg.LogLevel
 	}
-	if actualLogFile != "" {
-		scanner.SetLogger(output.NewLogger(actualLogFile, actualLogLevel, verb))
-	} else if verb >= 0 {
-		scanner.SetLogger(output.NewLogger("", actualLogLevel, verb))
+	// Apply config log-level to logutil gating only if no CLI verbosity flags set.
+	// Note: we do NOT raise scanner.SetMinVerbosity() here — CLI -v/-vv always
+	// takes priority. Config log-level only affects logutil's effectiveVerb,
+	// which is used by logutil.Log() (not by the engine's direct s.verbose checks).
+	if actualLogLevel != "" && verb == 0 {
+		ml := logutil.LogLevelToVerbosity(actualLogLevel)
+		logutil.SetMinLevel(ml)
 	}
 
 	var filterSev, filterTagList []string
@@ -485,27 +494,6 @@ func runScanParsed(
 	}
 	if filterTags != "" {
 		filterTagList = strings.Split(filterTags, ",")
-	}
-
-	if oobNeedsCount > 0 && !oobValid {
-		var missing []string
-		if !(oob || cfg.OOB.Enabled) {
-			missing = append(missing, "未启用")
-		} else {
-			if oobCfg.Provider == "ceye" {
-				if oobCfg.CeyeToken == "" {
-					missing = append(missing, "ceye-key")
-				}
-				if oobCfg.CeyeDomain == "" {
-					missing = append(missing, "ceye-domain")
-				}
-			}
-		}
-		if len(missing) > 0 {
-			console.PrintOOBWarning(oobNeedsCount, oobCfg.Provider, missing)
-		} else if !(oob || cfg.OOB.Enabled) {
-			console.PrintOOBWarning(oobNeedsCount, "", nil)
-		}
 	}
 
 	console.PrintScanConfig(output.ScanConfigInfo{
@@ -534,6 +522,38 @@ func runScanParsed(
 		LogFile:        actualLogFile,
 	})
 	console.PrintScanStart(len(targets), len(tmplList), len(pluginList))
+
+	// Print OOB warning AFTER config panel
+	if oobNeedsCount > 0 && !oobValid {
+		var missing []string
+		if !(oob || cfg.OOB.Enabled) {
+			missing = append(missing, "未启用")
+		} else {
+			if oobCfg.Provider == "ceye" {
+				if oobCfg.CeyeToken == "" {
+					missing = append(missing, "ceye-key")
+				}
+				if oobCfg.CeyeDomain == "" {
+					missing = append(missing, "ceye-domain")
+				}
+			}
+		}
+		if len(missing) > 0 {
+			console.PrintOOBWarning(oobNeedsCount, oobCfg.Provider, missing)
+		} else if !(oob || cfg.OOB.Enabled) {
+			console.PrintOOBWarning(oobNeedsCount, "", nil)
+		}
+	}
+
+	// Print template loading info AFTER the config panel
+	if len(tmplList) > 0 {
+		console.PrintTemplatesLoaded(len(tmplList), templatesDir)
+		for _, t := range tmplList {
+			console.PLine("模板", 1, "  - %s (%s) [%s] %s", t.ID, t.Name, t.Severity, t.FilePath)
+		}
+	} else if !pluginsOnly {
+		console.PLine("跳过", 0, "目录 %s 中未找到任何模板文件", templatesDir)
+	}
 
 	// AI setup — config.yaml 和 CLI 参数完全独立，只有优先级
 	// 逻辑：
@@ -1556,7 +1576,7 @@ type cmdLogger struct{}
 func (l *cmdLogger) DebugKV(msg string, args ...interface{})   { l.printKV("调试", msg, args) }
 func (l *cmdLogger) InfoKV(msg string, args ...interface{})    { l.printKV("信息", msg, args) }
 func (l *cmdLogger) WarnKV(msg string, args ...interface{})    { l.printKV("警告", msg, args) }
-func (l *cmdLogger) Error(msg string, args ...interface{})     { l.printFmt("错误", msg, args) }
+func (l *cmdLogger) Error(msg string, args ...interface{})     { l.printKV("错误", msg, args) }
 
 func (l *cmdLogger) printKV(tag string, msg string, args []interface{}) {
 	ts := pterm.Gray(time.Now().Format("2006-01-02 15:04:05.000"))
@@ -2090,5 +2110,7 @@ func (c *webuiClient) PushResult(r *types.Result) {
 		if c.console != nil {
 			c.console.PrintWarning("WebUI 结果推送: 服务器返回状态码 %d", resp.StatusCode)
 		}
+	} else if c.console != nil {
+		c.console.PrintInfo("WebUI 结果已推送: %s [%s] %s", r.Name, r.Severity, r.Target)
 	}
 }
